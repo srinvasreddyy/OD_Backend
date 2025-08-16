@@ -66,7 +66,7 @@ const ownerSchema = new mongoose.Schema({
   address: addressSchema,
   images: [String], // multiple restaurant/store images (URLs)
   profileImage: String, // single profile image (URL)
-
+  profileImagePublicID : String,
   searchCategories: {
     type: [String],
     validate: v => v.length <= 4,
