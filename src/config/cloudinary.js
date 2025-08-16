@@ -10,32 +10,38 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const uploadOnCloudinary = async function (filepath) {
-  try {
-    if (!filepath) throw new ApiError(400, "File not found");
+const uploadOnCloudinary = async function (localFilePath) {
+  if (!localFilePath) {
+    console.error("Cloudinary upload failed: File path is missing.");
+    return null;
+  }
 
-    const response = await cloudinary.uploader.upload(filepath, {
+  try {
+    // Upload the file to Cloudinary
+    const response = await cloudinary.uploader.upload(localFilePath, {
       resource_type: "auto"
     });
 
-    console.log("✅ File uploaded:", response.secure_url);
+    // File has been uploaded successfully
+    console.log("✅ File uploaded to Cloudinary:", response.secure_url);
+    return response;
 
-    fs.unlinkSync(filepath);
-
-    return response; 
   } catch (error) {
-    console.error("❌ Upload failed:", error.message);
+    // An error occurred during the upload
+    console.error("❌ Cloudinary upload failed:", error.message);
+    return null;
 
-    // ❗ Fix: fs.unlink is async; use fs.unlinkSync instead
+  } finally {
+    // --- This block will always run, ensuring the file is deleted ---
     try {
-      if (fs.existsSync(filepath)) {
-        fs.unlinkSync(filepath);
+      if (fs.existsSync(localFilePath)) {
+        fs.unlinkSync(localFilePath); // Delete the local temporary file
+        console.log("🗑️  Temporary file deleted:", localFilePath);
       }
     } catch (unlinkErr) {
-      console.error("❌ Failed to delete local file after error:", unlinkErr.message);
+      // This might happen if the file was already deleted or permissions are wrong
+      console.error("❌ Failed to delete temporary file:", unlinkErr.message);
     }
-
-    return null;
   }
 };
 
