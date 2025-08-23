@@ -12,13 +12,34 @@ const addressSchema = new mongoose.Schema({
       required: true
     },
     coordinates: {
-      type: [Number], // [longitude, latitude]
-      required: true
+      type: [Number]
     }
   },
   isDefault: Boolean
 });
 
+const cartItemSchema = new mongoose.Schema({
+    menuItemId: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'MenuItem', 
+        required: true 
+    },
+    quantity: { 
+        type: Number, 
+        required: true, 
+        min: 1,
+        default: 1 
+    },
+    // Add fields to store user selections
+    selectedVariant: {
+        groupId: String,
+        variantId: String
+    },
+    selectedAddons: [{
+        groupId: String,
+        addonId: String
+    }]
+}, { _id: false });
 
 
 const userSchema = new mongoose.Schema({
@@ -44,14 +65,8 @@ const userSchema = new mongoose.Schema({
     addresses: [addressSchema]
   },
 
-  foodCart: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "MenuItem"
-  }],
-  grocariesCart: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "MenuItem"
-  }],
+  foodCart: [cartItemSchema],
+  groceriesCart: [cartItemSchema],
 
   // Delivery Partner Profile
   deliveryPartnerProfile: {

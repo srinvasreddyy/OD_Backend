@@ -8,16 +8,15 @@ const menuItemSchema = new mongoose.Schema({
     required: true
   },
   categories: [{ type: mongoose.Schema.Types.ObjectId, ref: "Category" }],
-  itemType: {
-    type: String,
-    enum: ["veg", "non-veg", "egg"],
-    required: true
-  },
+  isFood: { type: Boolean, required: true },
+  itemType: { type: String, enum : ['veg', 'non-veg','egg'], required: true },
   description: String,
   basePrice: { type: Number, required: true },
   gst: { type: Number, required: true },
   finalPrice: { type: Number, required: true },
   packageType: String,
+  minimumQuantity: { type: Number , default: 1},
+  maximumQuantity: Number,
   
   variantGroups: [{
     groupId: { type: String, default: uuidv4 },
