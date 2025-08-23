@@ -9,9 +9,9 @@ const orderSchema = new mongoose.Schema({
     name: String,
     phoneNumber: String
   },
-  
+
   orderType: String, // 'delivery', 'pickup', 'dine-in'
-  
+
   deliveryAddress: {
     fullAddress: String,
     landmark: String,
@@ -20,7 +20,7 @@ const orderSchema = new mongoose.Schema({
       coordinates: [Number, Number]
     }
   },
-  
+
   orderedItems: [{
     itemId: { type: mongoose.Schema.Types.ObjectId, ref: "MenuItem" },
     itemName: String,
@@ -40,30 +40,40 @@ const orderSchema = new mongoose.Schema({
     }],
     itemTotal: Number
   }],
-  
+
   pricing: {
     subtotal: Number,
     deliveryFee: Number,
     tax: Number,
     totalAmount: Number
   },
-  
+
   paymentType: String, // 'cash', 'card', 'upi'
-  paymentStatus: String, // 'pending', 'paid', 'failed'
-  
-  status: String, // 'placed', 'out_for_delivery', 'delivered', 'cancelled'
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'paid', 'failed', 'refunded'],
+    default: 'pending',
+    required: true
+  }, // 'pending', 'paid', 'failed'
+
+  status: {
+    type: String,
+    enum: ['placed', 'out_for_delivery', 'delivered', 'cancelled'],
+    default: 'placed',
+    required: true
+  }, // 'placed', 'out_for_delivery', 'delivered', 'cancelled'
   acceptanceStatus: String, // 'pending', 'accepted', 'rejected'
 
   assignedDeliveryPartnerId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   deliveryDate: Date,
   deliveryTime: Date,
-  
+
   review: {
     rating: Number,
     comment: String,
     reviewDate: Date
   },
-  
+
   notes: String,
   createdAt: Date,
   updatedAt: Date

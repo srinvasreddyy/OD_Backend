@@ -19,6 +19,8 @@ const addressSchema = new mongoose.Schema({
   isDefault: Boolean
 });
 
+
+
 const userSchema = new mongoose.Schema({
   userId: String,
   phoneNumber: String,
@@ -41,6 +43,15 @@ const userSchema = new mongoose.Schema({
     gender: { type: String, enum: ['male', 'female', 'other'] },
     addresses: [addressSchema]
   },
+
+  foodCart: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "MenuItem"
+  }],
+  grocariesCart: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "MenuItem"
+  }],
 
   // Delivery Partner Profile
   deliveryPartnerProfile: {
