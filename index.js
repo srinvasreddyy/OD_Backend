@@ -1,9 +1,9 @@
+import dotenv from "dotenv";
+dotenv.config();
 import express from "express";
 import cors from 'cors';
-dotenv.config();
-import dotenv from "dotenv";
 import DBconnection from "./src/config/db.js";
-import ownerRoutes from "./src/routes/owner.routes.js"
+import authRoutes from './src/routes/authRoutes.js';
 import cookieParser from "cookie-parser";
 
 const app = express();
@@ -15,14 +15,14 @@ app.use(cors({
   origin: 'http://localhost:5173', 
   credentials: true 
 }));
-app.use("/api/owners", ownerRoutes);
+
+app.use('/auth', authRoutes);
 
 
 
 
 
 const PORT = process.env.PORT || 3000
-console.log(process.env.PORT)
 DBconnection()
 .then(() => {
   app.listen( PORT, () => {
