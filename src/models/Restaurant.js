@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 const restaurantSchema = new mongoose.Schema({
-  _id: mongoose.Schema.Types.ObjectId, 
+  _id: mongoose.Schema.Types.ObjectId,
+  restaurantId: String, 
   restaurantName: String,
   ownerFullName: String,
   email: String,
