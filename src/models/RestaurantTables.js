@@ -1,6 +1,5 @@
 import mongoose from "mongoose";
 const restaurantTableSchema = new mongoose.Schema({
-  _id: mongoose.Schema.Types.ObjectId,
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" },
   tableNumber: String,
   capacity: Number,
