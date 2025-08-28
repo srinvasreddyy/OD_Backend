@@ -1,57 +1,53 @@
 import mongoose from "mongoose";
 import { v4 as uuidv4 } from "uuid";
+
 const menuItemSchema = new mongoose.Schema({
-  _id: mongoose.Schema.Types.ObjectId,
-  restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", required: true },
-  itemName: {
-    type: String,
-    required: true
-  },
+  // _id is now handled by Mongoose.
+  restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", required: true, index: true },
+  itemName: { type: String, required: true, trim: true },
+  description: { type: String, trim: true },
+  displayImageUrl: { type: String },
+  imageUrls: [String],
   categories: [{ type: mongoose.Schema.Types.ObjectId, ref: "Category" }],
   isFood: { type: Boolean, required: true },
-  itemType: { type: String, enum : ['veg', 'non-veg','egg'], required: true },
-  description: String,
-  basePrice: { type: Number, required: true },
-  gst: { type: Number, required: true },
-  finalPrice: { type: Number, required: true },
+  itemType: { type: String, enum: ['veg', 'non-veg', 'egg'], required: true },
+  basePrice: { type: Number, required: true, min: 0 },
+  gst: { type: Number, required: true, min: 0 },
+  finalPrice: { type: Number, required: true, min: 0 },
   packageType: String,
-  minimumQuantity: { type: Number , default: 1},
-  maximumQuantity: Number,
-  
+  minimumQuantity: { type: Number, default: 1, min: 1 },
+  maximumQuantity: { type: Number, min: 1 },
   variantGroups: [{
+    _id: false,
     groupId: { type: String, default: uuidv4 },
-    groupTitle: String,
-    description: String,
+    groupTitle: { type: String, required: true, trim: true },
     variants: [{
+      _id: false,
       variantId: { type: String, default: uuidv4 },
-      variantName: String,
-      variantType: String,
-      additionalPrice: Number
+      variantName: { type: String, required: true, trim: true },
+      additionalPrice: { type: Number, required: true, default: 0 }
     }]
   }],
-  
   addonGroups: [{
+    _id: false,
     groupId: { type: String, default: uuidv4 },
-    groupTitle: String,
-    groupDescription: String,
-    customizationBehavior: {
-      type: String,
-      enum: ["compulsory", "optional"]
-    }, 
-    minSelection: Number,
+    groupTitle: { type: String, required: true, trim: true },
+    customizationBehavior: { type: String, enum: ["compulsory", "optional"], default: "optional" },
+    minSelection: { type: Number, default: 0 },
     maxSelection: Number,
     addons: [{
+      _id: false,
       addonId: { type: String, default: uuidv4 },
-      optionTitle: String,
-      price: Number,
-      gst: Number,
-      itemType: String
+      optionTitle: { type: String, required: true, trim: true },
+      price: { type: Number, required: true, default: 0 },
     }]
   }],
-  
-  imageUrls: [String],
-  isAvailable: Boolean,
-  createdAt: Date,
-  updatedAt: Date
+  isAvailable: { type: Boolean, default: true },
+}, {
+  timestamps: true // This automatically adds createdAt and updatedAt fields.
 });
+
+// Ensures that no two menu items in the same restaurant can have the same name.
+menuItemSchema.index({ itemName: 1, restaurantId: 1 }, { unique: true });
+
 export default mongoose.model("MenuItem", menuItemSchema);
