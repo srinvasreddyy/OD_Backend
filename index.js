@@ -17,9 +17,9 @@ app.use(cors({
   credentials: true 
 }));
 
-app.use('api/auth', authRoutes)
+app.use('/api/auth', authRoutes)
 app.use('/api/ownerRegistration',ownerRegistrationRoutes)
-app.use('/api/restaurants/',menuItemRoutes)
+app.use('/api/menuItems',menuItemRoutes)
 
 
 

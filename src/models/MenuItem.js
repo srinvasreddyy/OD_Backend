@@ -1,8 +1,10 @@
 import mongoose from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 
+/**
+ * @description Represents a single menu item belonging to a specific restaurant.
+ */
 const menuItemSchema = new mongoose.Schema({
-  // _id is now handled by Mongoose.
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", required: true, index: true },
   itemName: { type: String, required: true, trim: true },
   description: { type: String, trim: true },
@@ -44,7 +46,7 @@ const menuItemSchema = new mongoose.Schema({
   }],
   isAvailable: { type: Boolean, default: true },
 }, {
-  timestamps: true // This automatically adds createdAt and updatedAt fields.
+  timestamps: true
 });
 
 // Ensures that no two menu items in the same restaurant can have the same name.
