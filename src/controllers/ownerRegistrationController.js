@@ -27,6 +27,7 @@ const validateAndParseInput = (body) => {
   }
 
   try {
+    // These fields are expected to be JSON strings if sent via multipart/form-data
     const parsedAddress = address ? (typeof address === 'string' ? JSON.parse(address) : address) : null;
     const parsedTimings = timings ? (typeof timings === 'string' ? JSON.parse(timings) : timings) : null;
     return { ...body, parsedAddress, parsedTimings };
@@ -123,14 +124,19 @@ export const registerOwner = async (req, res) => {
     if (mediaToSave.length > 0) {
       dbPromises.push(RestaurantMedia.insertMany(mediaToSave, { session }));
     }
+    
+    // This block is updated to handle the simplified timings structure
     if (parsedTimings) {
-      const restaurantTimings = new RestaurantTimings({ restaurantId, timings: parsedTimings });
+      const restaurantTimings = new RestaurantTimings({
+          restaurantId,
+          timings: parsedTimings, // `parsedTimings` is now the array itself
+          lastUpdated: new Date()
+      });
       dbPromises.push(restaurantTimings.save({ session }));
     }
     
     await Promise.all(dbPromises);
 
-    // If everything succeeds, commit the transaction
     await session.commitTransaction();
 
     res.status(201).json({
@@ -140,7 +146,6 @@ export const registerOwner = async (req, res) => {
     });
 
   } catch (error) {
-    // If any step fails, abort the entire transaction
     await session.abortTransaction();
     console.error("Error in registerOwner:", error);
     res.status(error.statusCode || 500).json({
@@ -148,7 +153,6 @@ export const registerOwner = async (req, res) => {
       message: error.message || "Registration failed due to a server error.",
     });
   } finally {
-    // Always end the session
     session.endSession();
   }
 };
