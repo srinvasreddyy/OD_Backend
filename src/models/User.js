@@ -30,7 +30,6 @@ const cartItemSchema = new mongoose.Schema({
         min: 1,
         default: 1 
     },
-    // Add fields to store user selections
     selectedVariant: {
         groupId: String,
         variantId: String
@@ -44,19 +43,34 @@ const cartItemSchema = new mongoose.Schema({
 
 const userSchema = new mongoose.Schema({
   userId: String,
+  
+  // Additions for Google OAuth
+  googleId: { 
+    type: String, 
+    unique: true, 
+    sparse: true // Allows multiple nulls but enforces uniqueness for actual values
+  },
+  avatarUrl: {
+    type: String
+  },
+
   phoneNumber: String,
-  email: String,
+  email: {
+    type: String,
+    required: true,
+    trim: true,
+    lowercase: true
+  },
   fullName: String,
   userType: { 
     type: String, 
     enum: ['super_admin', 'admin', 'customer', 'delivery_partner'],
-    required: true
   },
 
   // OTP
   currentOTP: String,
   otpGeneratedAt: Date,
-  isPhoneVerified: Boolean,
+  isPhoneVerified: { type: Boolean, default: false },
 
   // Customer Profile
   customerProfile: {
@@ -77,7 +91,6 @@ const userSchema = new mongoose.Schema({
       type: {
         type: String,
         enum: ['Point'],
-        
       },
       coordinates: {
         type: [Number],
@@ -88,8 +101,10 @@ const userSchema = new mongoose.Schema({
   },
 
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" },
-
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
+
+// Ensures emails are unique for documents where the email field exists
+userSchema.index({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: "string" } } });
 
 export default mongoose.model("User", userSchema);
