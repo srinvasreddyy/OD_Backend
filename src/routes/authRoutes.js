@@ -8,6 +8,10 @@ const router = express.Router();
 router.post('/request-otp', requestOTP);
 router.post('/verify-otp', verifyOTP);
 router.post('/register', registerUser);
+router.post('/logout', (req, res) => {
+  res.clearCookie('token', { httpOnly: true, sameSite: 'Strict', secure: true });
+  res.status(200).json({ message: 'Logged out successfully' });
+});
 
 // --- Google OAuth Routes ---
 
