@@ -68,9 +68,14 @@ export const verifyOwnerOTP = async (req, res) => {
       maxAge: 2 * 60 * 60 * 1000,
     });
 
+    const ownerResponse = owner.toObject();
+    delete ownerResponse.password;
+    delete ownerResponse.currentOTP;
+    delete ownerResponse.otpGeneratedAt;
+
     res.status(200).json({
       message: "Owner OTP verified successfully.",
-      owner,
+      owner: ownerResponse, 
     });
   } catch (error) {
     console.error("Owner OTP verification failed:", error);
