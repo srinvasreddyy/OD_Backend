@@ -10,6 +10,8 @@ import authRoutes from './src/routes/authRoutes.js';
 import ownerRegistrationRoutes from "./src/routes/ownerRegistration.routes.js";
 import menuItemRoutes from "./src/routes/menuItem.routes.js";
 import cartRoutes from "./src/routes/cart.routes.js";
+import orderRoutes from "./src/routes/order.routes.js"; 
+
 const app = express();
 
 app.use(express.json());
@@ -27,6 +29,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/ownerRegistration', ownerRegistrationRoutes);
 app.use('/api/menuItems', menuItemRoutes);
 app.use('/api/cart', cartRoutes);
+app.use('/api/orders', orderRoutes);
 
 const PORT = process.env.PORT || 3000;
 DBconnection()

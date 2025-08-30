@@ -23,7 +23,11 @@ const uploadOnCloudinary = (file) => {
     const handleUpload = (error, result) => {
       // Cleanup the temporary file if it was uploaded from disk
       if (file.path && fs.existsSync(file.path)) {
-        fs.unlinkSync(file.path);
+        try {
+          fs.unlinkSync(file.path);
+        } catch (cleanupErr) {
+          console.error("Failed to cleanup temp file:", cleanupErr);
+        }
       }
       if (error) {
         console.error("❌ Cloudinary upload failed:", error.message);

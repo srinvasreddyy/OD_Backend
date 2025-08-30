@@ -64,7 +64,7 @@ const userSchema = new mongoose.Schema({
   fullName: String,
   userType: { 
     type: String, 
-    enum: ['super_admin', 'admin', 'customer', 'delivery_partner'],
+    enum: ['super_admin', 'customer', 'delivery_partner'],
   },
 
   // OTP

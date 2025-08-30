@@ -42,12 +42,16 @@ const validateAndParseInput = (body) => {
  * Handles all file uploads to Cloudinary in parallel.
  */
 const handleFileUploads = async (files) => {
-  const upload = (file) => file ? uploadOnCloudinary(file[0]) : Promise.resolve(null);
-  const uploadMultiple = (fileList) => fileList ? Promise.all(fileList.map(f => uploadOnCloudinary(f))) : Promise.resolve([]);
+  const upload = (file) => (file ? uploadOnCloudinary(file[0]) : Promise.resolve(null));
+  const uploadMultiple = (fileList) => (fileList ? Promise.all(fileList.map((f) => uploadOnCloudinary(f))) : Promise.resolve([]));
 
   const [
-    profileImageResult, galleryResults, businessLicenseResult,
-    foodHygieneResult, vatResult, bankDocResult
+    profileImageResult,
+    galleryResults,
+    businessLicenseResult,
+    foodHygieneResult,
+    vatResult,
+    bankDocResult,
   ] = await Promise.all([
     upload(files?.profileImage),
     uploadMultiple(files?.images),
@@ -59,14 +63,13 @@ const handleFileUploads = async (files) => {
 
   return {
     profileImageUrl: profileImageResult?.secure_url,
-    galleryUrls: galleryResults.map(r => r?.secure_url).filter(Boolean),
+    galleryUrls: galleryResults.map((r) => r?.secure_url).filter(Boolean),
     businessLicenseUrl: businessLicenseResult?.secure_url,
     foodHygieneUrl: foodHygieneResult?.secure_url,
     vatUrl: vatResult?.secure_url,
     bankDocUrl: bankDocResult?.secure_url,
   };
 };
-
 // --- Main Controller ---
 
 export const registerOwner = async (req, res) => {

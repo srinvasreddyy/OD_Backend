@@ -1,6 +1,5 @@
 import mongoose from "mongoose";
 const orderSchema = new mongoose.Schema({
-  _id: mongoose.Schema.Types.ObjectId,
   orderNumber: String,
   billNumber: String,
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" },
@@ -16,8 +15,13 @@ const orderSchema = new mongoose.Schema({
     fullAddress: String,
     landmark: String,
     coordinates: {
-      type: "Point",
-      coordinates: [Number, Number]
+      type: {
+        type: String,
+        enum: ['Point'],
+      },
+      coordinates: {
+        type: [Number],
+      }
     }
   },
 
