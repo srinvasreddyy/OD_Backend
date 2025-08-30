@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 
 const restaurantSchema = new mongoose.Schema({
-  // Mongoose adds _id automatically, so it's removed from here.
   restaurantName: {
     type: String,
     required: [true, 'Restaurant name is required.'],
@@ -17,7 +16,7 @@ const restaurantSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Email is required.'],
     unique: true,
-    lowercase: true, // Store emails consistently
+    lowercase: true,
     trim: true
   },
   phoneNumber: {
@@ -31,7 +30,7 @@ const restaurantSchema = new mongoose.Schema({
   },
   notifications: {
     type: Boolean,
-    default: true 
+    default: true
   },
   address: {
     shopNo: String,
@@ -39,34 +38,34 @@ const restaurantSchema = new mongoose.Schema({
     area: String,
     city: String,
     landmark: String,
-    // CORRECT GeoJSON structure
     coordinates: {
       type: {
         type: String,
         enum: ['Point'],
       },
       coordinates: {
-        type: [Number], // [longitude, latitude]
+        type: [Number],
       }
     }
   },
+  isEmailVerified: { type: Boolean, default: false },
+  currentOTP: String,
+  otpGeneratedAt: Date,
   password: {
     type: String,
     required: [true, 'Password is required.'],
   },
   isActive: {
     type: Boolean,
-    default: true 
+    default: true
   }
 }, {
-  timestamps: true 
+  timestamps: true
 });
 
-// Create a 2dsphere index for efficient geospatial queries
 restaurantSchema.index({ 'address.coordinates': '2dsphere' });
 
-// Middleware to hash the password before saving a new restaurant document
-restaurantSchema.pre('save', async function(next) {
+restaurantSchema.pre('save', async function (next) {
   if (!this.isModified('password')) {
     return next();
   }
