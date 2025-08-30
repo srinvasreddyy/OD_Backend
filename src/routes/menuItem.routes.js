@@ -1,14 +1,15 @@
 import express from 'express';
-import { 
-    addMenuItem, 
-    updateMenuItem, 
+import {
+    addMenuItem,
+    updateMenuItem,
     deleteMenuItem,
     getAllMenuItems,
     getMenuItemById,
     getMenuByRestaurantId,
     getAllCategories
-} from '../controllers/menuItemsController.js'; 
+} from '../controllers/menuItemsController.js';
 import { uploadMemory } from "../middleware/multer.middleware.js";
+import { validateRestaurant } from '../middleware/validateRestaurant.js';
 
 const router = express.Router();
 
@@ -16,16 +17,16 @@ const router = express.Router();
 router.get('/all', getAllMenuItems);
 router.get('/restaurant/:restaurantId', getMenuByRestaurantId);
 router.get('/:itemId', getMenuItemById);
-router.get('/',getAllCategories)
+router.get('/', getAllCategories);
+
 // --- Private Write/Modify Routes ---
 const uploadMiddleware = uploadMemory.fields([
-    { name: "displayImage", maxCount: 1 },       
-    { name: "galleryImages", maxCount: 5 } 
+    { name: "displayImage", maxCount: 1 },
+    { name: "galleryImages", maxCount: 5 }
 ]);
 
-router.post('/:restaurantId/addMenuItem', uploadMiddleware, addMenuItem);
-router.post('/:restaurantId/:itemId/updateMenuItem', uploadMiddleware, updateMenuItem);
-router.delete('/:restaurantId/:itemId/delete', deleteMenuItem);
-
+router.post('/:restaurantId/addMenuItem', validateRestaurant, uploadMiddleware, addMenuItem);
+router.post('/:restaurantId/:itemId/updateMenuItem', validateRestaurant, uploadMiddleware, updateMenuItem);
+router.delete('/:restaurantId/:itemId/delete', validateRestaurant, deleteMenuItem);
 
 export default router;

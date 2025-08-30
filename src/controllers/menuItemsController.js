@@ -60,7 +60,7 @@ const getPublicIdFromUrl = (url) => {
  */
 export const addMenuItem = async (req, res) => {
   // Takes restaurantId from the logged-in user first, or falls back to URL params.
-  const restaurantId = req.user?._id || req.params.restaurantId;
+  const restaurantId =  req.params.restaurantId;
   const session = await mongoose.startSession();
 
   try {
@@ -130,7 +130,7 @@ export const updateMenuItem = async (req, res) => {
       throw new ApiError(404, "Menu item not found with the given ID.");
     }
 
-    const actorRestaurantId = req.user?._id || req.params.restaurantId;
+    const actorRestaurantId =  req.params.restaurantId;
     if (!actorRestaurantId || menuItem.restaurantId.toString() !== actorRestaurantId.toString()) {
       throw new ApiError(403, "Forbidden: You do not have permission to update this menu item.");
     }
@@ -172,7 +172,7 @@ export const deleteMenuItem = async (req, res) => {
       throw new ApiError(404, "Menu item not found with the given ID.");
     }
 
-    const actorRestaurantId = req.user?._id || req.params.restaurantId;
+    const actorRestaurantId =  req.params.restaurantId;
     if (!actorRestaurantId || menuItem.restaurantId.toString() !== actorRestaurantId.toString()) {
       throw new ApiError(403, "Forbidden: You do not have permission to delete this menu item.");
     }
