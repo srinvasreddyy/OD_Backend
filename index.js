@@ -3,14 +3,15 @@ dotenv.config();
 import express from "express";
 import cors from 'cors';
 import cookieParser from "cookie-parser";
-import passport from "passport"; // 1. Import Passport
+import passport from "passport";
 import DBconnection from "./src/config/db.js";
-import './src/config/passport-setup.js'; // 2. Import the passport setup to register the strategy
+import './src/config/passport-setup.js';
 import authRoutes from './src/routes/authRoutes.js';
 import ownerRegistrationRoutes from "./src/routes/ownerRegistration.routes.js";
 import menuItemRoutes from "./src/routes/menuItem.routes.js";
 import cartRoutes from "./src/routes/cart.routes.js";
-import orderRoutes from "./src/routes/order.routes.js"; 
+import orderRoutes from "./src/routes/order.routes.js";
+import announcementRoutes from "./src/routes/announcements.routes.js";
 
 const app = express();
 
@@ -22,7 +23,6 @@ app.use(cors({
   credentials: true 
 }));
 
-// 3. Initialize Passport middleware
 app.use(passport.initialize());
 
 app.use('/api/auth', authRoutes);
@@ -30,6 +30,7 @@ app.use('/api/ownerRegistration', ownerRegistrationRoutes);
 app.use('/api/menuItems', menuItemRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/announcements', announcementRoutes); 
 
 const PORT = process.env.PORT || 3000;
 DBconnection()
