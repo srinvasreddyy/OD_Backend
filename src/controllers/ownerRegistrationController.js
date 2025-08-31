@@ -12,10 +12,10 @@ import uploadOnCloudinary from "../config/cloudinary.js";
  * Validates the required fields and parses JSON data from the request body.
  */
 const validateAndParseInput = (body) => {
-  const { restaurantName, ownerFullName, email, password, address, timings } = body;
+  const { restaurantName, ownerFullName, email, password, restaurantType, address, timings } = body;
 
-  if (!restaurantName || !ownerFullName || !email || !password) {
-    const error = new Error("Required fields are missing: restaurantName, ownerFullName, email, password.");
+  if (!restaurantName || !ownerFullName || !email || !password || !restaurantType) {
+    const error = new Error("Required fields are missing: restaurantName, ownerFullName, email, password, restaurantType.");
     error.statusCode = 400;
     throw error;
   }
@@ -27,7 +27,6 @@ const validateAndParseInput = (body) => {
   }
 
   try {
-    // These fields are expected to be JSON strings if sent via multipart/form-data
     const parsedAddress = address ? (typeof address === 'string' ? JSON.parse(address) : address) : null;
     const parsedTimings = timings ? (typeof timings === 'string' ? JSON.parse(timings) : timings) : null;
     return { ...body, parsedAddress, parsedTimings };
@@ -77,25 +76,19 @@ export const registerOwner = async (req, res) => {
   session.startTransaction();
 
   try {
-    // 1. --- Validate and Parse All Inputs ---
     const validatedData = validateAndParseInput(req.body);
     const { email, password, parsedAddress, parsedTimings } = validatedData;
 
     const existingRestaurant = await Restaurant.findOne({ email }).session(session);
     if (existingRestaurant) {
       const error = new Error("A restaurant with this email already exists.");
-      error.statusCode = 409; // 409 Conflict
+      error.statusCode = 409;
       throw error;
     }
-
-    // 2. --- Handle All File Uploads in Parallel ---
     const uploadedUrls = await handleFileUploads(req.files);
-
-    // 3. --- Prepare All Database Documents ---
-    const hashedPassword = await bcrypt.hash(password, 10);
     const restaurant = new Restaurant({
       ...validatedData,
-      password: hashedPassword,
+      password: password, // The pre-save hook will handle hashing
       address: parsedAddress,
     });
     const restaurantId = restaurant._id;
@@ -119,7 +112,6 @@ export const registerOwner = async (req, res) => {
       mediaToSave.push({ restaurantId, mediaUrl: uploadedUrls.profileImageUrl, isProfile: true });
     }
 
-    // 4. --- Execute All Database Saves within the Transaction ---
     const dbPromises = [
       restaurant.save({ session }),
       documents.save({ session }),
@@ -128,11 +120,10 @@ export const registerOwner = async (req, res) => {
       dbPromises.push(RestaurantMedia.insertMany(mediaToSave, { session }));
     }
     
-    // This block is updated to handle the simplified timings structure
     if (parsedTimings) {
       const restaurantTimings = new RestaurantTimings({
           restaurantId,
-          timings: parsedTimings, // `parsedTimings` is now the array itself
+          timings: parsedTimings,
           lastUpdated: new Date()
       });
       dbPromises.push(restaurantTimings.save({ session }));

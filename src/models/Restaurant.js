@@ -12,6 +12,11 @@ const restaurantSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  restaurantType: {
+    type: String,
+    enum: ['food_delivery_and_dining', 'groceries', 'food_delivery'],
+    required: [true, 'Restaurant type is required.']
+  },
   email: {
     type: String,
     required: [true, 'Email is required.'],

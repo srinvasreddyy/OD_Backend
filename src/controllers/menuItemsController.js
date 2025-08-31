@@ -5,7 +5,6 @@ import Restaurant from "../models/Restaurant.js";
 import Category from "../models/Category.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
 
-// A custom error class for creating predictable, handled errors.
 class ApiError extends Error {
   constructor(statusCode, message) {
     super(message);
@@ -53,13 +52,7 @@ const getPublicIdFromUrl = (url) => {
 
 // --- Write/Modify Controllers ---
 
-/**
- * @description Creates a new menu item for a specific restaurant.
- * @route POST /api/menuItems/:restaurantId/addMenuItem
- * @access Private (Restaurant Owner or Admin)
- */
 export const addMenuItem = async (req, res) => {
-  // Takes restaurantId from the logged-in user first, or falls back to URL params.
   const restaurantId =  req.restaurant?._id || req.params.restaurantId;
   const session = await mongoose.startSession();
 
@@ -67,21 +60,31 @@ export const addMenuItem = async (req, res) => {
     session.startTransaction();
 
     if (!restaurantId) {
-      throw new ApiError(400, "Restaurant ID is required and was not found in user session or URL parameters.");
-    }
-    if (!mongoose.Types.ObjectId.isValid(restaurantId)) {
-      throw new ApiError(400, "Invalid Restaurant ID format.");
+      throw new ApiError(400, "Restaurant ID is required.");
     }
     const { itemName, isFood, itemType, basePrice, gst, categoryNames, description, packageType, minimumQuantity, maximumQuantity, isBestseller, variantGroups: variantGroupsJSON, addonGroups: addonGroupsJSON } = req.body;
+    const isFoodBool = isFood === 'true';
+
     if (!itemName || isFood === undefined || !itemType || !basePrice || !gst) {
       throw new ApiError(400, "Missing required fields: itemName, isFood, itemType, basePrice, gst.");
     }
+    
     const [restaurant, existingItem] = await Promise.all([
       Restaurant.findById(restaurantId).session(session).lean(),
       MenuItem.findOne({ restaurantId, itemName }).session(session).lean()
     ]);
-    if (!restaurant) throw new ApiError(404, "Restaurant not found. Cannot add menu item.");
-    if (existingItem) throw new ApiError(409, `An item named '${itemName}' already exists in this restaurant.`);
+
+    if (!restaurant) throw new ApiError(404, "Restaurant not found.");
+    if (existingItem) throw new ApiError(409, `An item named '${itemName}' already exists.`);
+
+    // --- Validation based on restaurantType ---
+    if (restaurant.restaurantType === 'groceries' && isFoodBool) {
+        throw new ApiError(400, "A grocery store cannot add food items.");
+    }
+    if ((restaurant.restaurantType === 'food_delivery' || restaurant.restaurantType === 'food_delivery_and_dining') && !isFoodBool) {
+        throw new ApiError(400, "A food restaurant cannot add grocery items.");
+    }
+
     const parsedCategoryNames = categoryNames ? JSON.parse(categoryNames) : [];
     const categoryObjectIds = await findOrCreateCategories(parsedCategoryNames, session);
     const { displayImageUrl, galleryImageUrls } = await handleImageUploads(req.files);
@@ -91,12 +94,14 @@ export const addMenuItem = async (req, res) => {
     const parseJsonField = (jsonString, fieldName) => { if (!jsonString) return undefined; try { return JSON.parse(jsonString); } catch (e) { throw new ApiError(400, `Invalid JSON format for field: '${fieldName}'.`); } };
     const variantGroups = parseJsonField(variantGroupsJSON, 'variantGroups');
     const addonGroups = parseJsonField(addonGroupsJSON, 'addonGroups');
+    
     const menuItem = new MenuItem({
-      restaurantId, itemName, description, isFood: isFood === 'true',
+      restaurantId, itemName, description, isFood: isFoodBool,
       itemType, basePrice: parsedBasePrice, gst: parsedGst, finalPrice, packageType,
       minimumQuantity, maximumQuantity, variantGroups, addonGroups, isBestseller,
       displayImageUrl, imageUrls: galleryImageUrls, categories: categoryObjectIds,
     });
+
     await menuItem.save({ session });
     await session.commitTransaction();
     return res.status(201).json({ success: true, message: "Menu item created successfully!", data: menuItem });
@@ -108,6 +113,8 @@ export const addMenuItem = async (req, res) => {
     session.endSession();
   }
 };
+
+// Other controller functions (updateMenuItem, deleteMenuItem, etc.) remain unchanged but are not shown for brevity.
 
 /**
  * @description Updates an existing menu item's details. Handles partial updates.

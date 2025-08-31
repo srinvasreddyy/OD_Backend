@@ -285,18 +285,22 @@ export const getCartSummary = async (req, res) => {
 export const updateItemQuantity = async (req, res) => {
     try {
         const { userId } = req.user;
-        const { menuItemId, quantity, selectedVariant, selectedAddons } = req.body;
+        const { cartType, menuItemId, quantity, selectedVariant, selectedAddons } = req.body;
 
+        if (!['foodCart', 'groceriesCart'].includes(cartType)) {
+            return res.status(400).json({ message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
+        }
         if (typeof quantity === 'undefined') {
             return res.status(400).json({ message: "Quantity is required." });
         }
 
-        const menuItem = await MenuItem.findById(menuItemId).select('isFood minimumQuantity maximumQuantity').lean();
+        const menuItem = await MenuItem.findById(menuItemId).select('minimumQuantity maximumQuantity').lean();
         if (!menuItem) {
             return res.status(404).json({ message: "Menu item not found." });
         }
         
         if (quantity === 0) {
+            // Forward to removeItemFromCart logic
             return removeItemFromCart(req, res);
         }
 
@@ -307,10 +311,9 @@ export const updateItemQuantity = async (req, res) => {
             return res.status(400).json({ message: `The maximum allowed quantity is ${menuItem.maximumQuantity}.` });
         }
         
-        const cartField = menuItem.isFood ? 'foodCart' : 'groceriesCart';
         const result = await User.updateOne(
             { _id: userId },
-            { $set: { [`${cartField}.$[item].quantity`]: quantity } },
+            { $set: { [`${cartType}.$[item].quantity`]: quantity } },
             { 
                 arrayFilters: [{ 
                     'item.menuItemId': new mongoose.Types.ObjectId(menuItemId), 
@@ -338,17 +341,15 @@ export const updateItemQuantity = async (req, res) => {
 export const removeItemFromCart = async (req, res) => {
     try {
         const { userId } = req.user;
-        const { menuItemId, selectedVariant, selectedAddons } = req.body;
+        const { cartType, menuItemId, selectedVariant, selectedAddons } = req.body;
 
-        const menuItem = await MenuItem.findById(menuItemId).select('isFood').lean();
-        if (!menuItem) {
-            return res.status(404).json({ message: "Menu item not found." });
+        if (!['foodCart', 'groceriesCart'].includes(cartType)) {
+            return res.status(400).json({ message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
-        const cartField = menuItem.isFood ? 'foodCart' : 'groceriesCart';
         
         const result = await User.updateOne(
             { _id: userId },
-            { $pull: { [cartField]: { 
+            { $pull: { [cartType]: { 
                 menuItemId: new mongoose.Types.ObjectId(menuItemId),
                 selectedVariant: selectedVariant || null,
                 selectedAddons: selectedAddons || []

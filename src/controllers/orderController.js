@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
+import Restaurant from "../models/Restaurant.js";
 import { DELIVERY_FEE } from "../../constants.js";
 
 // --- Helper Functions for Code Clarity and Reusability ---
@@ -118,9 +119,17 @@ export const placeOrder = async (req, res) => {
             return res.status(400).json({ success: false, message: cartError });
         }
 
+        // --- Validation based on restaurantType ---
+        const restaurant = await Restaurant.findById(restaurantId).session(session).lean();
+        if (!restaurant) {
+            throw new Error("Restaurant not found.");
+        }
+        if ((restaurant.restaurantType === 'groceries' || restaurant.restaurantType === 'food_delivery') && orderType === 'dine-in') {
+            return res.status(400).json({ success: false, message: "Dine-in is not available for this restaurant." });
+        }
+
         const processedItems = processCartItems(user[cartType]);
         const pricing = calculateOrderPricing(processedItems);
-        // Remove internal _itemTax property before saving
         const orderedItemsToSave = processedItems.map(({ _itemTax, ...rest }) => rest);
 
         const order = new Order({
@@ -134,11 +143,11 @@ export const placeOrder = async (req, res) => {
             orderedItems: orderedItemsToSave,
             pricing,
             paymentType,
-            acceptanceStatus: 'pending', // Default acceptance status
+            acceptanceStatus: 'pending',
         });
 
         await order.save({ session });
-        user[cartType] = []; // Clear the cart
+        user[cartType] = [];
         await user.save({ session });
 
         await session.commitTransaction();
@@ -463,5 +472,119 @@ export const getRestaurantStats = async (req, res) => {
     } catch (error) {
         console.error("Error fetching restaurant stats:", error);
         return res.status(500).json({ success: false, message: "Failed to retrieve restaurant statistics." });
+    }
+};
+
+/**
+ * @description Generates a sales report for a specified period.
+ * @access Private (Restaurant Owner)
+ */
+export const getRestaurantSalesReport = async (req, res) => {
+    const { id: restaurantId } = req.restaurant;
+    const { startDate, endDate } = req.query;
+
+    try {
+        const matchStage = {
+            restaurantId: new mongoose.Types.ObjectId(restaurantId),
+            status: 'delivered', // Only consider completed orders for sales
+            createdAt: {}
+        };
+
+        if (startDate) matchStage.createdAt.$gte = new Date(startDate);
+        if (endDate) matchStage.createdAt.$lte = new Date(endDate);
+        if (!startDate && !endDate) {
+            // Default to the last 30 days if no range is provided
+            matchStage.createdAt.$gte = new Date(new Date().setDate(new Date().getDate() - 30));
+        }
+
+        const salesReport = await Order.aggregate([
+            { $match: matchStage },
+            {
+                $group: {
+                    _id: null,
+                    totalRevenue: { $sum: "$pricing.totalAmount" },
+                    totalOrders: { $sum: 1 },
+                    averageOrderValue: { $avg: "$pricing.totalAmount" }
+                }
+            }
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            data: salesReport[0] || { totalRevenue: 0, totalOrders: 0, averageOrderValue: 0 }
+        });
+
+    } catch (error) {
+        console.error("Error generating sales report:", error);
+        return res.status(500).json({ success: false, message: "Failed to generate sales report." });
+    }
+};
+
+/**
+ * @description Generates a report on order statuses and types.
+ * @access Private (Restaurant Owner)
+ */
+export const getRestaurantOrdersReport = async (req, res) => {
+    const { id: restaurantId } = req.restaurant;
+
+    try {
+        const ordersReport = await Order.aggregate([
+            { $match: { restaurantId: new mongoose.Types.ObjectId(restaurantId) } },
+            {
+                $facet: {
+                    "byStatus": [
+                        { $group: { _id: "$status", count: { $sum: 1 } } }
+                    ],
+                    "byOrderType": [
+                        { $group: { _id: "$orderType", count: { $sum: 1 } } }
+                    ]
+                }
+            }
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                statusReport: ordersReport[0].byStatus,
+                orderTypeReport: ordersReport[0].byOrderType
+            }
+        });
+
+    } catch (error) {
+        console.error("Error generating orders report:", error);
+        return res.status(500).json({ success: false, message: "Failed to generate orders report." });
+    }
+};
+
+/**
+ * @description Analyzes and reports on the performance of menu items.
+ * @access Private (Restaurant Owner)
+ */
+export const getMenuItemPerformance = async (req, res) => {
+    const { id: restaurantId } = req.restaurant;
+
+    try {
+        const itemPerformance = await Order.aggregate([
+            { $match: { restaurantId: new mongoose.Types.ObjectId(restaurantId), status: 'delivered' } },
+            { $unwind: "$orderedItems" },
+            {
+                $group: {
+                    _id: "$orderedItems.itemId",
+                    itemName: { $first: "$orderedItems.itemName" },
+                    totalQuantitySold: { $sum: "$orderedItems.quantity" },
+                    totalRevenue: { $sum: "$orderedItems.itemTotal" }
+                }
+            },
+            { $sort: { totalQuantitySold: -1 } } // Sort by most sold
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            data: itemPerformance
+        });
+
+    } catch (error) {
+        console.error("Error generating menu item performance report:", error);
+        return res.status(500).json({ success: false, message: "Failed to generate menu item performance report." });
     }
 };
