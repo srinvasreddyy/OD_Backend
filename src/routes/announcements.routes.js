@@ -10,7 +10,7 @@ import {
   getAllActiveAnnouncements,
   toggleAnnouncementStatus,
   deleteAnnouncement
-} from '../controllers/announcementController.js';
+} from '../controllers/announcementsController.js';
 import { validateRestaurant } from '../middleware/validateRestaurant.js';
 import { validateUser } from '../middleware/validateUser.js';
 import { uploadMemory } from '../middleware/multer.middleware.js';

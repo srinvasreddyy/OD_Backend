@@ -19,35 +19,35 @@ const addressSchema = new mongoose.Schema({
 });
 
 const cartItemSchema = new mongoose.Schema({
-    menuItemId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'MenuItem', 
-        required: true 
-    },
-    quantity: { 
-        type: Number, 
-        required: true, 
-        min: 1,
-        default: 1 
-    },
-    selectedVariant: {
-        groupId: String,
-        variantId: String
-    },
-    selectedAddons: [{
-        groupId: String,
-        addonId: String
-    }]
+  menuItemId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MenuItem',
+    required: true
+  },
+  quantity: {
+    type: Number,
+    required: true,
+    min: 1,
+    default: 1
+  },
+  selectedVariant: {
+    groupId: String,
+    variantId: String
+  },
+  selectedAddons: [{
+    groupId: String,
+    addonId: String
+  }]
 }, { _id: false });
 
 
 const userSchema = new mongoose.Schema({
   userId: String,
-  
+
   // Additions for Google OAuth
-  googleId: { 
-    type: String, 
-    unique: true, 
+  googleId: {
+    type: String,
+    unique: true,
     sparse: true // Allows multiple nulls but enforces uniqueness for actual values
   },
   avatarUrl: {
@@ -59,11 +59,12 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true,
-    lowercase: true
+    lowercase: true,
+    match: [/.+@.+\..+/, 'Invalid email address'],
   },
   fullName: String,
-  userType: { 
-    type: String, 
+  userType: {
+    type: String,
     enum: ['super_admin', 'customer', 'delivery_partner'],
   },
 

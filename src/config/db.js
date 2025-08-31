@@ -1,11 +1,14 @@
-import mongoose from "mongoose";   
+import mongoose from "mongoose";
 
-const DBconnection = async ()=>{
+const DBconnection = async () => {
     try {
-       const connectionInstance = await mongoose.connect("mongodb+srv://srinivasreddy:9381619147@odbackend.5pkpowq.mongodb.net");
+        const connectionInstance = await mongoose.connect(process.env.MONGODB_URI, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+        });
         console.log(`\n MongoDB connected Host : ${connectionInstance.connection.host}`)
     } catch (error) {
-        console.log("MongoDB error",error)
+        console.log("MongoDB error", error)
         process.exit(1)
     }
 }
