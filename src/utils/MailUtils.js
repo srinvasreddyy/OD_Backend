@@ -1,11 +1,11 @@
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
+import logger from './logger.js';
 
 dotenv.config();
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
-
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
@@ -110,9 +110,9 @@ export const sendOTPEmail = async (email, otp) => {
 
   try {
     await transporter.sendMail(mailOptions);
+    logger.info(`OTP email sent successfully to ${email}`);
   } catch (error) {
-    // Use logger instead of console
-    logger.error('OTP email send failed:', error);
-    throw new Error('Email send failed');
+    logger.error('OTP email send failed', { email: email, error: error.message });
+    throw new Error('Email could not be sent.');
   }
 };

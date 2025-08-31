@@ -1,17 +1,27 @@
 import jwt from 'jsonwebtoken';
 
-export function generateJWT(user) {
-  const payload = {
-    userId: user._id,
-    userType: user.userType
-  };
-  if (user.userType === 'owner') {
-    payload.restaurantId = user._id;
+// The second argument `isOwner` determines the payload structure
+export function generateJWT(entity, isOwner = false) {
+  let payload;
+
+  if (isOwner) {
+    // Create a distinct payload for Restaurant Owners
+    payload = {
+      restaurantId: entity._id,
+      userType: 'owner'
+    };
+  } else {
+    // Create the standard payload for Users
+    payload = {
+      userId: entity._id,
+      userType: entity.userType
+    };
   }
+  
   return jwt.sign(
     payload,
     process.env.JWT_SECRET,
-    { expiresIn: '2h' }
+    { expiresIn: process.env.JWT_EXPIRY || '2h' } // Use env variable with a default
   );
 }
 
@@ -20,7 +30,6 @@ export function verifyJWT(token) {
   try {
     return jwt.verify(token, process.env.JWT_SECRET);
   } catch (error) {
-    // Consider logging the error
     return null;
   }
 }

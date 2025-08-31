@@ -4,6 +4,7 @@ import MenuItem from "../models/MenuItem.js";
 import Restaurant from "../models/Restaurant.js";
 import Category from "../models/Category.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
+import logger from "../utils/logger.js";
 
 class ApiError extends Error {
   constructor(statusCode, message) {
@@ -11,8 +12,6 @@ class ApiError extends Error {
     this.statusCode = statusCode;
   }
 }
-
-// --- Helper Functions ---
 
 const findOrCreateCategories = async (categoryNames, session) => {
   if (!categoryNames?.length) return [];
@@ -44,6 +43,7 @@ const handleImageUploads = async (files) => {
 };
 
 const getPublicIdFromUrl = (url) => {
+  if(!url) return null;
   const parts = url.split("/");
   const publicIdWithExtension = parts.slice(-2).join("/");
   return publicIdWithExtension.split(".").slice(0, -1).join(".");
@@ -52,16 +52,13 @@ const getPublicIdFromUrl = (url) => {
 
 // --- Write/Modify Controllers ---
 
-export const addMenuItem = async (req, res) => {
-  const restaurantId =  req.restaurant?._id || req.params.restaurantId;
+export const addMenuItem = async (req, res, next) => {
+  const restaurantId = req.restaurant._id;
   const session = await mongoose.startSession();
 
   try {
     session.startTransaction();
 
-    if (!restaurantId) {
-      throw new ApiError(400, "Restaurant ID is required.");
-    }
     const { itemName, isFood, itemType, basePrice, gst, categoryNames, description, packageType, minimumQuantity, maximumQuantity, isBestseller, variantGroups: variantGroupsJSON, addonGroups: addonGroupsJSON } = req.body;
     const isFoodBool = isFood === 'true';
 
@@ -75,9 +72,8 @@ export const addMenuItem = async (req, res) => {
     ]);
 
     if (!restaurant) throw new ApiError(404, "Restaurant not found.");
-    if (existingItem) throw new ApiError(409, `An item named '${itemName}' already exists.`);
+    if (existingItem) throw new ApiError(409, `An item named '${itemName}' already exists in your restaurant.`);
 
-    // --- Validation based on restaurantType ---
     if (restaurant.restaurantType === 'groceries' && isFoodBool) {
         throw new ApiError(400, "A grocery store cannot add food items.");
     }
@@ -108,21 +104,15 @@ export const addMenuItem = async (req, res) => {
 
   } catch (error) {
     if (session.inTransaction()) await session.abortTransaction();
-    let statusCode = 500; let response = { success: false, message: "An unexpected server error occurred." }; if (error instanceof ApiError) { statusCode = error.statusCode; response.message = error.message; } else if (error.name === 'ValidationError') { statusCode = 400; response.message = "Input validation failed."; response.errors = Object.values(error.errors).reduce((acc, err) => ({ ...acc, [err.path]: err.message }), {}); } else if (error.code === 11000) { statusCode = 409; response.message = `An item named '${error.keyValue.itemName}' already exists.`; } else if (error.name === 'CastError') { statusCode = 400; response.message = `Invalid data format for the '${error.path}' field.`; } return res.status(statusCode).json(response);
+    next(error); // Delegate to global error handler
   } finally {
     session.endSession();
   }
 };
 
-// Other controller functions (updateMenuItem, deleteMenuItem, etc.) remain unchanged but are not shown for brevity.
-
-/**
- * @description Updates an existing menu item's details. Handles partial updates.
- * @route POST /api/menuItems/:restaurantId/:itemId/updateMenuItem
- * @access Private (Restaurant Owner or Admin)
- */
-export const updateMenuItem = async (req, res) => {
+export const updateMenuItem = async (req, res, next) => {
   const { itemId } = req.params;
+  const restaurantId = req.restaurant._id;
   const session = await mongoose.startSession();
 
   try {
@@ -137,8 +127,7 @@ export const updateMenuItem = async (req, res) => {
       throw new ApiError(404, "Menu item not found with the given ID.");
     }
 
-    const actorRestaurantId =  req.restaurant?._id || req.params.restaurantId;
-    if (!actorRestaurantId || menuItem.restaurantId.toString() !== actorRestaurantId.toString()) {
+    if (menuItem.restaurantId.toString() !== restaurantId.toString()) {
       throw new ApiError(403, "Forbidden: You do not have permission to update this menu item.");
     }
 
@@ -152,19 +141,15 @@ export const updateMenuItem = async (req, res) => {
     return res.status(200).json({ success: true, message: "Menu item updated successfully!", data: updatedMenuItem });
   } catch (error) {
     if (session.inTransaction()) await session.abortTransaction();
-    let statusCode = 500; let response = { success: false, message: "An unexpected server error occurred." }; if (error instanceof ApiError) { statusCode = error.statusCode; response.message = error.message; } else if (error.name === 'ValidationError') { statusCode = 400; response.message = "Input validation failed."; response.errors = Object.values(error.errors).reduce((acc, err) => ({ ...acc, [err.path]: err.message }), {}); } else if (error.name === 'CastError') { statusCode = 400; response.message = `Invalid data format for the '${error.path}' field.`; } return res.status(statusCode).json(response);
+    next(error); // Delegate to global error handler
   } finally {
     session.endSession();
   }
 };
 
-/**
- * @description Deletes a menu item.
- * @route DELETE /api/menuItems/:restaurantId/:itemId/delete
- * @access Private (Restaurant Owner or Admin)
- */
-export const deleteMenuItem = async (req, res) => {
+export const deleteMenuItem = async (req, res, next) => {
   const { itemId } = req.params;
+  const restaurantId = req.restaurant._id;
   const session = await mongoose.startSession();
 
   try {
@@ -179,8 +164,7 @@ export const deleteMenuItem = async (req, res) => {
       throw new ApiError(404, "Menu item not found with the given ID.");
     }
 
-    const actorRestaurantId = req.restaurant?._id || req.params.restaurantId;
-    if (!actorRestaurantId || menuItem.restaurantId.toString() !== actorRestaurantId.toString()) {
+    if (menuItem.restaurantId.toString() !== restaurantId.toString()) {
       throw new ApiError(403, "Forbidden: You do not have permission to delete this menu item.");
     }
 
@@ -189,15 +173,17 @@ export const deleteMenuItem = async (req, res) => {
 
     const imageUrlsToDelete = [menuItem.displayImageUrl, ...menuItem.imageUrls].filter(Boolean);
     if (imageUrlsToDelete.length > 0) {
-      const publicIds = imageUrlsToDelete.map(getPublicIdFromUrl);
-      const deletionPromises = publicIds.map(id => cloudinary.uploader.destroy(id));
-      await Promise.allSettled(deletionPromises);
+      const publicIds = imageUrlsToDelete.map(getPublicIdFromUrl).filter(Boolean);
+      if (publicIds.length > 0) {
+        const deletionPromises = publicIds.map(id => cloudinary.uploader.destroy(id));
+        await Promise.allSettled(deletionPromises);
+      }
     }
 
     return res.status(200).json({ success: true, message: "Menu item deleted successfully." });
   } catch (error) {
     if (session.inTransaction()) await session.abortTransaction();
-    let statusCode = 500; let response = { success: false, message: "An unexpected server error occurred." }; if (error instanceof ApiError) { statusCode = error.statusCode; response.message = error.message; } else if (error.name === 'CastError') { statusCode = 400; response.message = `Invalid data format for the '${error.path}' field.`; } return res.status(statusCode).json(response);
+    next(error); // Delegate to global error handler
   } finally {
     session.endSession();
   }
@@ -206,12 +192,7 @@ export const deleteMenuItem = async (req, res) => {
 
 // --- Read (GET) Controllers ---
 
-/**
- * @description Get a paginated list of all available menu items from all restaurants.
- * @route GET /api/menuItems/all
- * @access Public
- */
-export const getAllMenuItems = async (req, res) => {
+export const getAllMenuItems = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
@@ -231,17 +212,11 @@ export const getAllMenuItems = async (req, res) => {
             pagination: { totalItems, totalPages: Math.ceil(totalItems / limit), currentPage: page }
         });
     } catch (error) {
-        console.error("API Error:", error);
-        res.status(500).json({ success: false, message: error.message || "An unexpected server error occurred." });
+        next(error);
     }
 };
 
-/**
- * @description Get a single menu item by its ID.
- * @route GET /api/menuItems/:itemId
- * @access Public
- */
-export const getMenuItemById = async (req, res) => {
+export const getMenuItemById = async (req, res, next) => {
     try {
         const { itemId } = req.params;
         if (!mongoose.Types.ObjectId.isValid(itemId)) {
@@ -255,18 +230,11 @@ export const getMenuItemById = async (req, res) => {
         }
         res.status(200).json({ success: true, data: menuItem });
     } catch (error) {
-        console.error("API Error:", error);
-        res.status(500).json({ success: false, message: error.message || "An unexpected server error occurred." });
+        next(error);
     }
 };
 
-
-/**
- * @description Get all menu items for a specific restaurant.
- * @route GET /api/menuItems/restaurant/:restaurantId
- * @access Public
- */
-export const getMenuByRestaurantId = async (req, res) => {
+export const getMenuByRestaurantId = async (req, res, next) => {
     try {
         const { restaurantId } = req.params;
         const { page = 1, limit = 20, isAvailable } = req.query;
@@ -292,29 +260,19 @@ export const getMenuByRestaurantId = async (req, res) => {
             pagination: { totalItems, totalPages: Math.ceil(totalItems / parseInt(limit)), currentPage: parseInt(page) }
         });
     } catch (error) {
-        console.error("API Error:", error);
-        res.status(500).json({ success: false, message: error.message || "An unexpected server error occurred." });
+        next(error);
     }
 };
 
-/**
- * @description Get a list of all categories from the database, sorted alphabetically.
- * @route GET /api/menuItems/categories
- * @access Public
- */
-export const getAllCategories = async (req, res) => {
+export const getAllCategories = async (req, res, next) => {
     try {
-        // Find all documents in the Category collection without any filter.
         const categories = await Category.find({}).sort({ categoryName: 1 });
-
-        // The result from .find() is already an array.
         res.status(200).json({
             success: true,
             count: categories.length,
             data: categories,
         });
     } catch (error) {
-        console.error("API Error:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch categories." });
+        next(error);
     }
 };

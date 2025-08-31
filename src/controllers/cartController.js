@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import User from '../models/User.js';
 import MenuItem from '../models/MenuItem.js';
+import logger from "../utils/logger.js";
 
 // --- Configuration ---
 const DELIVERY_FEE = 50; // This can be moved to a constants file
@@ -134,7 +135,7 @@ const calculatePricingSummary = (processedItems) => {
  * @description Adds an item to the cart or increments its quantity. Enforces that all items in a cart must be from the same restaurant.
  * @access Private (User)
  */
-export const addItemToCart = async (req, res) => {
+export const addItemToCart = async (req, res, next) => {
     try {
         const { userId } = req.user;
         const { menuItemId, quantity = 1, selectedVariant, selectedAddons } = req.body;
@@ -180,6 +181,9 @@ export const addItemToCart = async (req, res) => {
         }
 
     } catch (error) {
+        if (!error.status) {
+            logger.error("Error in addItemToCart", { error: error.message });
+        }
         return res.status(error.status || 500).json({ message: error.message || "An unexpected server error occurred." });
     }
 };
@@ -188,7 +192,7 @@ export const addItemToCart = async (req, res) => {
  * @description Retrieves and enriches the contents of the user's food and groceries carts.
  * @access Private (User)
  */
-export const getCart = async (req, res) => {
+export const getCart = async (req, res, next) => {
     try {
         const { userId } = req.user;
         const user = await User.findById(userId)
@@ -235,8 +239,8 @@ export const getCart = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error("Error fetching cart:", error);
-        return res.status(500).json({ message: "An unexpected server error occurred." });
+        logger.error("Error fetching cart", { error: error.message });
+        next(error);
     }
 };
 
@@ -244,7 +248,7 @@ export const getCart = async (req, res) => {
  * @description Retrieves a summary of the cart including item count and final pricing.
  * @access Private (User)
  */
-export const getCartSummary = async (req, res) => {
+export const getCartSummary = async (req, res, next) => {
     try {
         const { userId } = req.user;
         const { cartType } = req.query; // Expects 'food' or 'groceries'
@@ -273,8 +277,8 @@ export const getCartSummary = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error("Error getting cart summary:", error);
-        return res.status(500).json({ message: "An unexpected server error occurred." });
+        logger.error("Error getting cart summary", { error: error.message });
+        next(error);
     }
 };
 
@@ -282,7 +286,7 @@ export const getCartSummary = async (req, res) => {
  * @description Updates the quantity of a specific item configuration in the cart. Removes the item if quantity is 0.
  * @access Private (User)
  */
-export const updateItemQuantity = async (req, res) => {
+export const updateItemQuantity = async (req, res, next) => {
     try {
         const { userId } = req.user;
         const { cartType, menuItemId, quantity, selectedVariant, selectedAddons } = req.body;
@@ -329,8 +333,8 @@ export const updateItemQuantity = async (req, res) => {
 
         return res.status(200).json({ message: "Item quantity updated successfully." });
     } catch (error) {
-        console.error("Error updating item quantity:", error);
-        return res.status(500).json({ message: "An unexpected server error occurred." });
+        logger.error("Error updating item quantity", { error: error.message });
+        next(error);
     }
 };
 
@@ -338,7 +342,7 @@ export const updateItemQuantity = async (req, res) => {
  * @description Removes a specific item configuration from the cart.
  * @access Private (User)
  */
-export const removeItemFromCart = async (req, res) => {
+export const removeItemFromCart = async (req, res, next) => {
     try {
         const { userId } = req.user;
         const { cartType, menuItemId, selectedVariant, selectedAddons } = req.body;
@@ -362,8 +366,8 @@ export const removeItemFromCart = async (req, res) => {
 
         return res.status(200).json({ message: "Item removed from cart successfully." });
     } catch (error) {
-        console.error("Error removing item from cart:", error);
-        return res.status(500).json({ message: "An unexpected server error occurred." });
+        logger.error("Error removing item from cart", { error: error.message });
+        next(error);
     }
 };
 
@@ -371,7 +375,7 @@ export const removeItemFromCart = async (req, res) => {
  * @description Clears all items from either the food or groceries cart.
  * @access Private (User)
  */
-export const clearCart = async (req, res) => {
+export const clearCart = async (req, res, next) => {
     try {
         const { userId } = req.user;
         const { cartType } = req.body;
@@ -388,7 +392,7 @@ export const clearCart = async (req, res) => {
 
         return res.status(200).json({ message: `Your ${cartType} cart has been cleared.` });
     } catch (error) {
-        console.error("Error clearing cart:", error);
-        return res.status(500).json({ message: "An unexpected server error occurred." });
+        logger.error("Error clearing cart", { error: error.message });
+        next(error);
     }
 };

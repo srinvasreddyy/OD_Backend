@@ -5,12 +5,10 @@ import RestaurantDocuments from "../models/RestaurantDocuments.js";
 import RestaurantMedia from "../models/RestaurantMedia.js";
 import RestaurantTimings from "../models/RestaurantTimings.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
+import logger from "../utils/logger.js";
 
 // --- Helper Functions for a Clean and Maintainable Controller ---
 
-/**
- * Validates the required fields and parses JSON data from the request body.
- */
 const validateAndParseInput = (body) => {
   const { restaurantName, ownerFullName, email, password, restaurantType, address, timings } = body;
 
@@ -37,9 +35,6 @@ const validateAndParseInput = (body) => {
   }
 };
 
-/**
- * Handles all file uploads to Cloudinary in parallel.
- */
 const handleFileUploads = async (files) => {
   const upload = (file) => (file ? uploadOnCloudinary(file[0]) : Promise.resolve(null));
   const uploadMultiple = (fileList) => (fileList ? Promise.all(fileList.map((f) => uploadOnCloudinary(f))) : Promise.resolve([]));
@@ -141,7 +136,7 @@ export const registerOwner = async (req, res) => {
 
   } catch (error) {
     await session.abortTransaction();
-    console.error("Error in registerOwner:", error);
+    logger.error("Error in registerOwner", { error: error.message, statusCode: error.statusCode });
     res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || "Registration failed due to a server error.",

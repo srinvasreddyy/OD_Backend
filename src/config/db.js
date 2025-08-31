@@ -1,15 +1,13 @@
 import mongoose from "mongoose";
+import logger from "../utils/logger.js";
 
 const DBconnection = async () => {
     try {
-        const connectionInstance = await mongoose.connect(process.env.MONGODB_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-        });
-        console.log(`\n MongoDB connected Host : ${connectionInstance.connection.host}`)
+        const connectionInstance = await mongoose.connect(process.env.MONGODB_URI);
+        logger.info(`MongoDB connected Host: ${connectionInstance.connection.host}`);
     } catch (error) {
-        console.log("MongoDB error", error)
-        process.exit(1)
+        logger.error("MongoDB connection error", { error: error.message });
+        process.exit(1);
     }
 }
-export default DBconnection
+export default DBconnection;

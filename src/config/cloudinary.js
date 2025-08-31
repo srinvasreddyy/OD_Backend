@@ -2,6 +2,7 @@ import { v2 as cloudinary } from "cloudinary";
 import streamifier from "streamifier";
 import fs from "fs";
 import dotenv from "dotenv";
+import logger from "../utils/logger.js";
 
 dotenv.config();
 
@@ -26,11 +27,11 @@ const uploadOnCloudinary = (file) => {
         try {
           fs.unlinkSync(file.path);
         } catch (cleanupErr) {
-          console.error("Failed to cleanup temp file:", cleanupErr);
+          logger.error("Failed to cleanup temp file:", { error: cleanupErr.message, path: file.path });
         }
       }
       if (error) {
-        console.error("❌ Cloudinary upload failed:", error.message);
+        logger.error("Cloudinary upload failed", { error: error.message });
         return reject(error);
       }
       resolve(result);

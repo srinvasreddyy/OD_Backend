@@ -140,32 +140,39 @@ export const reactToAnnouncement = async (req, res) => {
     
     const existingReaction = announcement.reactions.find(r => r.userId.toString() === userId.toString());
 
-    let updatedAnnouncement;
-
     if (existingReaction) {
-      if (existingReaction.reaction === reaction) {
-        updatedAnnouncement = await Announcement.findByIdAndUpdate(announcementId, {
-          $pull: { reactions: { userId } },
-          $inc: { reactionCount: -1 }
-        }, { new: true });
-      } else {
-        updatedAnnouncement = await Announcement.findOneAndUpdate(
-          { _id: announcementId, "reactions.userId": userId },
-          { $set: { "reactions.$.reaction": reaction, "reactions.$.createdAt": new Date() } },
-          { new: true }
-        );
-      }
+        if (existingReaction.reaction === reaction) {
+            // Same reaction clicked again: remove it
+            await Announcement.updateOne(
+                { _id: announcementId },
+                { $pull: { reactions: { userId } } }
+            );
+        } else {
+            // Different reaction: update it
+            await Announcement.updateOne(
+                { _id: announcementId, "reactions.userId": userId },
+                { $set: { "reactions.$.reaction": reaction, "reactions.$.createdAt": new Date() } }
+            );
+        }
     } else {
-      updatedAnnouncement = await Announcement.findByIdAndUpdate(announcementId, {
-        $addToSet: { reactions: { userId, reaction, createdAt: new Date() } },
-        $inc: { reactionCount: 1 }
-      }, { new: true });
+        // New reaction
+        await Announcement.updateOne(
+            { _id: announcementId },
+            { $addToSet: { reactions: { userId, reaction, createdAt: new Date() } } }
+        );
     }
+
+    // Atomically recalculate count from array size to ensure consistency
+    const finalAnnouncement = await Announcement.findByIdAndUpdate(
+      announcementId,
+      [{ $set: { reactionCount: { $size: "$reactions" } } }],
+      { new: true }
+    );
 
     return res.status(200).json({
       success: true,
       message: "Reaction updated successfully.",
-      data: updatedAnnouncement
+      data: finalAnnouncement
     });
 
   } catch (error) {

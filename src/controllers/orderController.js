@@ -4,14 +4,9 @@ import User from "../models/User.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import Restaurant from "../models/Restaurant.js";
 import { DELIVERY_FEE } from "../../constants.js";
+import logger from "../utils/logger.js";
 
-// --- Helper Functions for Code Clarity and Reusability ---
-
-/**
- * Validates a user's cart to ensure it's not empty and all items belong to a single restaurant.
- * @param {Array} cart - The user's cart, populated with menu item details.
- * @returns {{error: string|null, restaurantId: string|null}} - An object containing an error message or the restaurant ID.
- */
+// --- Helper Functions (omitted for brevity, no changes) ---
 const validateCart = (cart) => {
     if (!cart || cart.length === 0) {
         return { error: "Cannot place an order with an empty cart." };
@@ -24,12 +19,6 @@ const validateCart = (cart) => {
     }
     return { error: null, restaurantId: firstItemRestaurantId };
 };
-
-/**
- * Processes each cart item to calculate its total price, including variants and addons, and the applicable tax.
- * @param {Array} cart - The user's cart array.
- * @returns {Array} An array of processed items with their calculated totals and tax.
- */
 const processCartItems = (cart) => {
     return cart.map(cartItem => {
         const { menuItemId: menuItem, quantity, selectedVariant, selectedAddons } = cartItem;
@@ -68,16 +57,10 @@ const processCartItems = (cart) => {
             selectedVariants: variantsDetails,
             selectedAddons: addonsDetails,
             itemTotal: itemSubTotal,
-            _itemTax: itemTax, // Internal property to be used for final price calculation
+            _itemTax: itemTax,
         };
     });
 };
-
-/**
- * Calculates the final pricing for the entire order (subtotal, tax, delivery fee, total).
- * @param {Array} processedItems - The array of processed items with their individual totals and tax.
- * @returns {Object} An object containing the final pricing details.
- */
 const calculateOrderPricing = (processedItems) => {
     const subtotal = processedItems.reduce((acc, item) => acc + item.itemTotal, 0);
     const tax = processedItems.reduce((acc, item) => acc + item._itemTax, 0);
@@ -88,11 +71,7 @@ const calculateOrderPricing = (processedItems) => {
 
 // --- Main Controller Functions ---
 
-/**
- * @description Creates a new order from the user's cart. Wrapped in a transaction.
- * @access Private (Customer)
- */
-export const placeOrder = async (req, res) => {
+export const placeOrder = async (req, res, next) => {
     const { _id: userId } = req.user;
     const { orderType, deliveryAddress, paymentType, cartType } = req.body;
 
@@ -119,7 +98,6 @@ export const placeOrder = async (req, res) => {
             return res.status(400).json({ success: false, message: cartError });
         }
 
-        // --- Validation based on restaurantType ---
         const restaurant = await Restaurant.findById(restaurantId).session(session).lean();
         if (!restaurant) {
             throw new Error("Restaurant not found.");
@@ -155,18 +133,14 @@ export const placeOrder = async (req, res) => {
 
     } catch (error) {
         await session.abortTransaction();
-        console.error("Error placing order:", error);
-        return res.status(500).json({ success: false, message: error.message || "An internal server error occurred." });
+        logger.error("Error placing order", { error: error.message });
+        next(error);
     } finally {
         session.endSession();
     }
 };
 
-/**
- * @description Retrieves a paginated list of all orders for the logged-in customer.
- * @access Private (Customer)
- */
-export const getUserOrders = async (req, res) => {
+export const getUserOrders = async (req, res, next) => {
     try {
         const { _id: userId } = req.user;
         const { page = 1, limit = 10 } = req.query;
@@ -175,18 +149,14 @@ export const getUserOrders = async (req, res) => {
         const totalOrders = await Order.countDocuments({ customerId: userId });
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: parseInt(page) } });
     } catch (error) {
-        console.error("Error fetching user orders:", error);
-        return res.status(500).json({ success: false, message: "Failed to retrieve your orders." });
+        logger.error("Error fetching user orders", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Retrieves a paginated list of all orders for the logged-in restaurant owner, with optional filters.
- * @access Private (Restaurant Owner)
- */
-export const getRestaurantOrders = async (req, res) => {
+export const getRestaurantOrders = async (req, res, next) => {
     try {
-        const { id: restaurantId } = req.restaurant;
+        const { _id: restaurantId } = req.restaurant;
         const { page = 1, limit = 10, status, acceptanceStatus } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
@@ -199,18 +169,14 @@ export const getRestaurantOrders = async (req, res) => {
 
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: parseInt(page) } });
     } catch (error) {
-        console.error("Error fetching restaurant orders:", error);
-        return res.status(500).json({ success: false, message: "Failed to retrieve restaurant orders." });
+        logger.error("Error fetching restaurant orders", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Retrieves a paginated list of new orders awaiting acceptance for the restaurant owner.
- * @access Private (Restaurant Owner)
- */
-export const getNewRestaurantOrders = async (req, res) => {
+export const getNewRestaurantOrders = async (req, res, next) => {
     try {
-        const { id: restaurantId } = req.restaurant;
+        const { _id: restaurantId } = req.restaurant;
         const { page = 1, limit = 10 } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const query = { restaurantId, status: 'placed', acceptanceStatus: 'pending' };
@@ -218,20 +184,16 @@ export const getNewRestaurantOrders = async (req, res) => {
         const totalOrders = await Order.countDocuments(query);
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: parseInt(page) } });
     } catch (error) {
-        console.error("Error fetching new restaurant orders:", error);
-        return res.status(500).json({ success: false, message: "Failed to retrieve new orders." });
+        logger.error("Error fetching new restaurant orders", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Allows a restaurant owner to accept or reject a new order.
- * @access Private (Restaurant Owner)
- */
-export const respondToOrder = async (req, res) => {
+export const respondToOrder = async (req, res, next) => {
     try {
         const { orderId } = req.params;
-        const { acceptance } = req.body; // Expects 'accepted' or 'rejected'
-        const { id: restaurantId } = req.restaurant;
+        const { acceptance } = req.body; 
+        const { _id: restaurantId } = req.restaurant;
 
         if (!['accepted', 'rejected'].includes(acceptance)) {
             return res.status(400).json({ success: false, message: "Invalid acceptance value. Must be 'accepted' or 'rejected'." });
@@ -247,27 +209,23 @@ export const respondToOrder = async (req, res) => {
 
         order.acceptanceStatus = acceptance;
         if (acceptance === 'rejected') {
-            order.status = 'cancelled'; // Automatically cancel if rejected
+            order.status = 'cancelled';
         }
         
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: `Order successfully ${acceptance}.`, data: updatedOrder });
 
     } catch (error) {
-        console.error("Error responding to order:", error);
-        return res.status(500).json({ success: false, message: "Failed to respond to the order." });
+        logger.error("Error responding to order", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Allows a restaurant owner to assign an available delivery partner to an accepted order.
- * @access Private (Restaurant Owner)
- */
-export const assignDeliveryPartner = async (req, res) => {
+export const assignDeliveryPartner = async (req, res, next) => {
     try {
         const { orderId } = req.params;
         const { deliveryPartnerId } = req.body;
-        const { id: restaurantId } = req.restaurant;
+        const { _id: restaurantId } = req.restaurant;
 
         if (!mongoose.Types.ObjectId.isValid(deliveryPartnerId)) {
             return res.status(400).json({ success: false, message: "Invalid delivery partner ID format." });
@@ -291,13 +249,13 @@ export const assignDeliveryPartner = async (req, res) => {
         }
 
         order.assignedDeliveryPartnerId = deliveryPartnerId;
-        order.status = 'out_for_delivery'; // Automatically update status
+        order.status = 'out_for_delivery'; 
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: "Delivery partner assigned successfully.", data: updatedOrder });
 
     } catch (error) {
-        console.error("Error assigning delivery partner:", error);
-        return res.status(500).json({ success: false, message: "Failed to assign delivery partner." });
+        logger.error("Error assigning delivery partner", { error: error.message });
+        next(error);
     }
 };
 
@@ -305,7 +263,7 @@ export const assignDeliveryPartner = async (req, res) => {
  * @description Retrieves details for a single order, accessible by the customer or restaurant owner.
  * @access Private (Customer or Restaurant Owner)
  */
-export const getOrderDetails = async (req, res) => {
+export const getOrderDetails = async (req, res, next) => {
     try {
         const { orderId } = req.params;
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
@@ -316,28 +274,27 @@ export const getOrderDetails = async (req, res) => {
             return res.status(404).json({ success: false, message: "Order not found." });
         }
 
-        // Authorization Check
-        const isCustomer = req.user.userType === 'customer' && order.customerId._id.toString() === req.user._id.toString();
-        const isOwner = req.user.userType === 'owner' && order.restaurantId._id.toString() === req.restaurant.id.toString();
+        // Authorization Check: The controller is now used by two different routes.
+        // We check if either req.user (from validateUser) or req.restaurant (from validateRestaurant) is present.
+        const isCustomer = req.user && order.customerId._id.toString() === req.user._id.toString();
+        const isOwner = req.restaurant && order.restaurantId._id.toString() === req.restaurant._id.toString();
+        
         if (!isCustomer && !isOwner) {
             return res.status(403).json({ success: false, message: "You are not authorized to view this order." });
         }
+        
         return res.status(200).json({ success: true, data: order });
     } catch (error) {
-        console.error("Error fetching order details:", error);
-        return res.status(500).json({ success: false, message: "Failed to retrieve order details." });
+        logger.error("Error fetching order details", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description A general-purpose function for a restaurant owner to update the order's main status or payment status.
- * @access Private (Restaurant Owner)
- */
-export const updateOrderStatus = async (req, res) => {
+export const updateOrderStatus = async (req, res, next) => {
     try {
         const { orderId } = req.params;
         const { status, paymentStatus } = req.body;
-        const { id: restaurantId } = req.restaurant;
+        const { _id: restaurantId } = req.restaurant;
 
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
@@ -370,16 +327,12 @@ export const updateOrderStatus = async (req, res) => {
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: "Order updated successfully.", data: updatedOrder });
     } catch (error) {
-        console.error("Error updating order status:", error);
-        return res.status(500).json({ success: false, message: "Failed to update order status." });
+        logger.error("Error updating order status", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Allows a customer to cancel their own order, but only if it has not yet been accepted by the restaurant.
- * @access Private (Customer)
- */
-export const cancelOrder = async (req, res) => {
+export const cancelOrder = async (req, res, next) => {
     try {
         const { orderId } = req.params;
         const { _id: userId } = req.user;
@@ -393,7 +346,6 @@ export const cancelOrder = async (req, res) => {
         if (order.customerId.toString() !== userId.toString()) {
             return res.status(403).json({ success: false, message: "You are not authorized to cancel this order." });
         }
-        // Critical State Check: Can only cancel if the restaurant has not yet accepted.
         if (order.acceptanceStatus !== 'pending') {
             return res.status(400).json({ success: false, message: `This order cannot be cancelled as it has already been ${order.acceptanceStatus}.` });
         }
@@ -401,18 +353,14 @@ export const cancelOrder = async (req, res) => {
         const cancelledOrder = await order.save();
         return res.status(200).json({ success: true, message: "Order has been cancelled successfully.", data: cancelledOrder });
     } catch (error) {
-        console.error("Error cancelling order:", error);
-        return res.status(500).json({ success: false, message: "Failed to cancel the order." });
+        logger.error("Error cancelling order", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Retrieves comprehensive sales and order statistics for a restaurant using a MongoDB aggregation pipeline.
- * @access Private (Restaurant Owner)
- */
-export const getRestaurantStats = async (req, res) => {
+export const getRestaurantStats = async (req, res, next) => {
     try {
-        const { id: restaurantId } = req.restaurant;
+        const { _id: restaurantId } = req.restaurant;
         
         const now = new Date();
         const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -443,7 +391,6 @@ export const getRestaurantStats = async (req, res) => {
             }
         ]);
 
-        // Safely extract results, providing default values if a stage returns no documents
         const overall = stats[0].overallStats[0] || { totalOrders: 0, totalDelivered: 0, totalCancelled: 0, totalIncome: 0 };
         const monthly = stats[0].monthlyIncome;
         const currentMonth = stats[0].currentMonthStats[0] || { orders: 0, delivered: 0, income: 0 };
@@ -451,7 +398,7 @@ export const getRestaurantStats = async (req, res) => {
 
         const calculatePercentageChange = (current, previous) => {
             if (previous === 0) return current > 0 ? 100 : 0;
-            return Math.round(((current - previous) / previous) * 100 * 100) / 100; // Round to 2 decimal places
+            return Math.round(((current - previous) / previous) * 100 * 100) / 100;
         };
 
         const comparison = {
@@ -470,30 +417,25 @@ export const getRestaurantStats = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Error fetching restaurant stats:", error);
-        return res.status(500).json({ success: false, message: "Failed to retrieve restaurant statistics." });
+        logger.error("Error fetching restaurant stats", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Generates a sales report for a specified period.
- * @access Private (Restaurant Owner)
- */
-export const getRestaurantSalesReport = async (req, res) => {
-    const { id: restaurantId } = req.restaurant;
+export const getRestaurantSalesReport = async (req, res, next) => {
+    const { _id: restaurantId } = req.restaurant;
     const { startDate, endDate } = req.query;
 
     try {
         const matchStage = {
             restaurantId: new mongoose.Types.ObjectId(restaurantId),
-            status: 'delivered', // Only consider completed orders for sales
+            status: 'delivered',
             createdAt: {}
         };
 
         if (startDate) matchStage.createdAt.$gte = new Date(startDate);
         if (endDate) matchStage.createdAt.$lte = new Date(endDate);
         if (!startDate && !endDate) {
-            // Default to the last 30 days if no range is provided
             matchStage.createdAt.$gte = new Date(new Date().setDate(new Date().getDate() - 30));
         }
 
@@ -515,17 +457,13 @@ export const getRestaurantSalesReport = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Error generating sales report:", error);
-        return res.status(500).json({ success: false, message: "Failed to generate sales report." });
+        logger.error("Error generating sales report", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Generates a report on order statuses and types.
- * @access Private (Restaurant Owner)
- */
-export const getRestaurantOrdersReport = async (req, res) => {
-    const { id: restaurantId } = req.restaurant;
+export const getRestaurantOrdersReport = async (req, res, next) => {
+    const { _id: restaurantId } = req.restaurant;
 
     try {
         const ordersReport = await Order.aggregate([
@@ -551,17 +489,13 @@ export const getRestaurantOrdersReport = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Error generating orders report:", error);
-        return res.status(500).json({ success: false, message: "Failed to generate orders report." });
+        logger.error("Error generating orders report", { error: error.message });
+        next(error);
     }
 };
 
-/**
- * @description Analyzes and reports on the performance of menu items.
- * @access Private (Restaurant Owner)
- */
-export const getMenuItemPerformance = async (req, res) => {
-    const { id: restaurantId } = req.restaurant;
+export const getMenuItemPerformance = async (req, res, next) => {
+    const { _id: restaurantId } = req.restaurant;
 
     try {
         const itemPerformance = await Order.aggregate([
@@ -575,7 +509,7 @@ export const getMenuItemPerformance = async (req, res) => {
                     totalRevenue: { $sum: "$orderedItems.itemTotal" }
                 }
             },
-            { $sort: { totalQuantitySold: -1 } } // Sort by most sold
+            { $sort: { totalQuantitySold: -1 } }
         ]);
 
         return res.status(200).json({
@@ -584,7 +518,7 @@ export const getMenuItemPerformance = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Error generating menu item performance report:", error);
-        return res.status(500).json({ success: false, message: "Failed to generate menu item performance report." });
+        logger.error("Error generating menu item performance report", { error: error.message });
+        next(error);
     }
 };

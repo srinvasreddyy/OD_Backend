@@ -9,8 +9,10 @@ export const validateRestaurant = async (req, res, next) => {
     }
 
     const decoded = verifyJWT(token);
-    if (!decoded || decoded.userType !== "owner") {
-      return res.status(403).json({ message: "Forbidden." });
+    
+    // Securely check for the distinct owner payload structure
+    if (!decoded || decoded.userType !== "owner" || !decoded.restaurantId) {
+      return res.status(403).json({ message: "Forbidden. Owner access required." });
     }
 
     const restaurant = await Restaurant.findById(decoded.restaurantId);

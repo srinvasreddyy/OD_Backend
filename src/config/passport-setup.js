@@ -4,8 +4,6 @@ import User from '../models/User.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
-console.log('Attempting to load Client ID:', process.env.GOOGLE_CLIENT_ID);
-
 passport.use(
   new GoogleStrategy(
     {

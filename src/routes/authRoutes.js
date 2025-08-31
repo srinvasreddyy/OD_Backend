@@ -18,7 +18,7 @@ router.post("/request-otp", requestOTP);
 router.post("/verify-otp", verifyOTP);
 router.post("/register", registerUser);
 
-// Restaurant Owner OTP
+// Restaurant Owner OTP (Login)
 router.post("/owner/request-otp", requestOwnerOTP);
 router.post("/owner/verify-otp", verifyOwnerOTP);
 
@@ -26,7 +26,7 @@ router.post("/logout", (req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
     sameSite: "Strict",
-    secure: true,
+    secure: process.env.NODE_ENV === 'production',
   });
   res.status(200).json({ message: "Logged out successfully" });
 });
