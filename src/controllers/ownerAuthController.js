@@ -43,7 +43,13 @@ export const verifyOwnerOTP = async (req, res, next) => {
 
     const owner = await Restaurant.findOne({ email });
 
-    if (!owner || owner.currentOTP !== otp) {
+    if (!owner) {
+        logger.error("Owner not found for OTP verification", { email });
+        return res.status(400).json({ message: "Invalid OTP." });
+    }
+
+    if (owner.currentOTP !== otp.trim()) {
+      logger.error("Invalid OTP for owner", { email, receivedOtp: otp, expectedOtp: owner.currentOTP });
       return res.status(400).json({ message: "Invalid OTP." });
     }
 

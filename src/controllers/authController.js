@@ -14,7 +14,7 @@ export const requestOTP = async (req, res, next) => {
         email,
         currentOTP: otp,
         otpGeneratedAt: new Date(),
-        isPhoneVerified: false // This should likely be isEmailVerified
+        isEmailVerified: false
       },
       { upsert: true, new: true }
     );
@@ -35,7 +35,13 @@ export const verifyOTP = async (req, res, next) => {
 
     const user = await User.findOne({ email });
 
-    if (!user || user.currentOTP !== otp) {
+    if (!user) {
+        logger.error("User not found for OTP verification", { email });
+        return res.status(400).json({ message: "Invalid OTP." });
+    }
+    
+    if (user.currentOTP !== otp.trim()) {
+      logger.error("Invalid OTP for user", { email, receivedOtp: otp, expectedOtp: user.currentOTP });
       return res.status(400).json({ message: "Invalid OTP." });
     }
 
@@ -47,7 +53,7 @@ export const verifyOTP = async (req, res, next) => {
       { _id: user._id },
       {
         $set: {
-          isPhoneVerified: true, // This field name seems incorrect for an email OTP
+          isEmailVerified: true,
           currentOTP: null,
         }
       }
@@ -69,7 +75,7 @@ export const registerUser = async (req, res, next) => {
     const { userId, fullName, userType, customerProfile, deliveryPartnerProfile } = req.body;
 
     const user = await User.findById(userId);
-    if (!user || !user.isPhoneVerified) {
+    if (!user || !user.isEmailVerified) {
       return res.status(400).json({ message: "OTP verification required." });
     }
 

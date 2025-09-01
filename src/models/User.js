@@ -71,7 +71,7 @@ const userSchema = new mongoose.Schema({
   // OTP
   currentOTP: String,
   otpGeneratedAt: Date,
-  isPhoneVerified: { type: Boolean, default: false },
+  isEmailVerified: { type: Boolean, default: false },
 
   // Customer Profile
   customerProfile: {
