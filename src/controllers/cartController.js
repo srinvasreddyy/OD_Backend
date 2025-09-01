@@ -137,7 +137,7 @@ const calculatePricingSummary = (processedItems) => {
  */
 export const addItemToCart = async (req, res, next) => {
     try {
-        const { userId } = req.user;
+        const userId = req.user?._id;
         const { menuItemId, quantity = 1, selectedVariant, selectedAddons } = req.body;
 
         const { cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariant, selectedAddons);
@@ -195,7 +195,7 @@ export const addItemToCart = async (req, res, next) => {
  */
 export const getCart = async (req, res, next) => {
     try {
-        const { userId } = req.user;
+        const userId = req.user?._id;
         const user = await User.findById(userId)
             .populate({ path: 'foodCart.menuItemId' })
             .populate({ path: 'groceriesCart.menuItemId' })
@@ -251,7 +251,7 @@ export const getCart = async (req, res, next) => {
  */
 export const getCartSummary = async (req, res, next) => {
     try {
-        const { userId } = req.user;
+        const userId = req.user?._id;
         const { cartType } = req.query; // Expects 'food' or 'groceries'
 
         if (!['food', 'groceries'].includes(cartType)) {
@@ -289,7 +289,7 @@ export const getCartSummary = async (req, res, next) => {
  */
 export const updateItemQuantity = async (req, res, next) => {
     try {
-        const { userId } = req.user;
+        const userId = req.user?._id;
         const { cartType, menuItemId, quantity, selectedVariant, selectedAddons } = req.body;
 
         if (!['foodCart', 'groceriesCart'].includes(cartType)) {
@@ -345,7 +345,7 @@ export const updateItemQuantity = async (req, res, next) => {
  */
 export const removeItemFromCart = async (req, res, next) => {
     try {
-        const { userId } = req.user;
+        const userId = req.user?._id;
         const { cartType, menuItemId, selectedVariant, selectedAddons } = req.body;
 
         if (!['foodCart', 'groceriesCart'].includes(cartType)) {
@@ -378,7 +378,7 @@ export const removeItemFromCart = async (req, res, next) => {
  */
 export const clearCart = async (req, res, next) => {
     try {
-        const { userId } = req.user;
+        const userId = req.user?._id;
         const { cartType } = req.body;
 
         if (!['food', 'groceries'].includes(cartType)) {
