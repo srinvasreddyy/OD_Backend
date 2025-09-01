@@ -158,7 +158,8 @@ export const addItemToCart = async (req, res, next) => {
         
         const itemIdentifier = {
             'item.menuItemId': new mongoose.Types.ObjectId(menuItemId),
-            'item.selectedVariant': itemData.selectedVariant,
+            'item.selectedVariant.groupId': itemData.selectedVariant ? itemData.selectedVariant.groupId : null,
+            'item.selectedVariant.variantId': itemData.selectedVariant ? itemData.selectedVariant.variantId : null,
             'item.selectedAddons': { $all: itemData.selectedAddons, $size: itemData.selectedAddons.length }
         };
 
