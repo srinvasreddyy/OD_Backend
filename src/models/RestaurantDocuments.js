@@ -1,23 +1,23 @@
 import mongoose from "mongoose";
 const restaurantDocumentsSchema = new mongoose.Schema({
-    restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" },
+    restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", required: true, unique: true },
    businessLicense: {
     licenseNumber: String,
     issueDate: Date,
     imageUrl: String,
-    isVerified: Boolean
+    isVerified: { type: Boolean, default: false }
   },
   foodHygieneCertificate: {
     certificateNumber: String,
     issueDate: Date,
     imageUrl: String,
-    isVerified: Boolean
+    isVerified: { type: Boolean, default: false }
   },
   vatCertificate: {
     vatNumber: String,
     issueDate: Date,
     imageUrl: String,
-    isVerified: Boolean
+    isVerified: { type: Boolean, default: false }
   },
   bankDetails: {
     beneficiaryName: String,
@@ -25,10 +25,9 @@ const restaurantDocumentsSchema = new mongoose.Schema({
     accountNumber: String,
     bankAddress: String,
     bankDetailsImageUrl: String,
-    isVerified: Boolean
+    isVerified: { type: Boolean, default: false }
   },
-  verificationStatus: String,
-  createdAt: Date,
-  updatedAt: Date
-});
+  verificationStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+}, { timestamps: true }); // Added timestamps
+
 export default mongoose.model("RestaurantDocuments", restaurantDocumentsSchema);

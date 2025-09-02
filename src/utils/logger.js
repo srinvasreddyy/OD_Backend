@@ -1,43 +1,56 @@
-import fs from 'fs';
+import winston from 'winston';
+import path from 'path';
 
 const logDir = 'logs';
 
-// Create logs directory if it doesn't exist
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir);
-}
+// Define log format for console (with colors for development)
+const consoleFormat = winston.format.combine(
+  winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+  winston.format.colorize({ all: true }),
+  winston.format.printf(
+    (info) => `[${info.timestamp}] ${info.level}: ${info.message}`
+  )
+);
 
-const logFile = fs.createWriteStream(`${logDir}/app.log`, { flags: 'a' });
+// Define log format for file (JSON)
+const fileFormat = winston.format.combine(
+  winston.format.timestamp(),
+  winston.format.json()
+);
 
-const log = (level, message, meta = {}) => {
-  const logObject = {
-    timestamp: new Date().toISOString(),
-    level,
-    message,
-    ...meta,
-  };
-
-  const logString = JSON.stringify(logObject);
-  
-  // Write to console
-  if (level === 'error') {
-    console.error(logString);
-  } else {
-    console.log(logString);
-  }
-
-  // Write to file
-  logFile.write(logString + '\n');
+const options = {
+  // File transport for all levels
+  file: {
+    level: 'info',
+    filename: path.join(logDir, 'app.log'),
+    handleExceptions: true,
+    format: fileFormat,
+    maxsize: 5242880, // 5MB
+    maxFiles: 5,
+  },
+  // Console transport
+  console: {
+    level: 'debug',
+    handleExceptions: true,
+    // Use simple, colorful format for development, and JSON for production
+    format: process.env.NODE_ENV === 'production' 
+      ? fileFormat 
+      : consoleFormat,
+  },
 };
 
-const logger = {
-  info: (message, meta) => log('info', message, meta),
-  error: (message, meta) => log('error', message, meta),
-  warn: (message, meta) => log('warn', message, meta),
-  debug: (message, meta) => {
-    if (process.env.NODE_ENV !== 'production') {
-      log('debug', message, meta);
-    }
+const logger = winston.createLogger({
+  transports: [
+    new winston.transports.File(options.file),
+    new winston.transports.Console(options.console),
+  ],
+  exitOnError: false, // Do not exit on handled exceptions
+});
+
+// Create a stream object with a 'write' function that will be used by morgan
+logger.stream = {
+  write: function(message, encoding) {
+    logger.info(message.trim());
   },
 };
 

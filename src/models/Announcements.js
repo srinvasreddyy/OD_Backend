@@ -17,15 +17,8 @@ const announcementSchema = new mongoose.Schema({
     content: { type: String, required: true },
     imageUrl: String,
     reactions: [reactionSchema],
-    reactionCount: { type: Number, default: 0 }, // For efficient stat calculation
+    reactionCount: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
-    createdAt: { type: Date, default: Date.now, index: true },
-    updatedAt: { type: Date, default: Date.now }
-});
-
-announcementSchema.pre('save', function(next) {
-    this.updatedAt = new Date();
-    next();
-});
+}, { timestamps: true }); 
 
 export default mongoose.model("Announcement", announcementSchema);

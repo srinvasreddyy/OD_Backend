@@ -2,21 +2,24 @@ import mongoose from "mongoose";
 import User from '../models/User.js';
 import MenuItem from '../models/MenuItem.js';
 import logger from "../utils/logger.js";
+import { DELIVERY_FEE } from "../../constants.js";
 
-// --- Configuration ---
-const DELIVERY_FEE = 50; // This can be moved to a constants file
-
-// --- Helper Functions for Code Clarity and Reusability ---
+// --- Helper Functions ---
 
 /**
- * Fetches a menu item and validates the requested quantity, variant, and addons against its schema.
- * @param {string} menuItemId - The ID of the menu item to validate.
- * @param {number} quantity - The desired quantity.
- * @param {object} selectedVariant - The selected variant configuration.
- * @param {Array} selectedAddons - An array of selected addon configurations.
- * @returns {Promise<object>} - A promise that resolves to the validated menu item details.
- * @throws Will throw an error if validation fails.
+ * Generates a consistent, unique key for a given menu item configuration.
+ * @param {object} itemConfig - Object containing menuItemId, selectedVariant, and selectedAddons.
+ * @returns {string} A unique string key.
  */
+const generateCartItemKey = ({ menuItemId, selectedVariant, selectedAddons }) => {
+    const variantPart = selectedVariant?.variantId || 'novariant';
+    const addonsPart = (selectedAddons || [])
+        .map(a => a.addonId)
+        .sort()
+        .join('-');
+    return `${menuItemId}_${variantPart}_${addonsPart || 'noaddons'}`;
+};
+
 const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVariant, selectedAddons) => {
     if (!mongoose.Types.ObjectId.isValid(menuItemId)) {
         throw { status: 400, message: "Invalid Menu Item ID format." };
@@ -25,8 +28,10 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
     if (!menuItem) {
         throw { status: 404, message: "Menu item not found." };
     }
+    if (!menuItem.isAvailable) {
+        throw { status: 400, message: `${menuItem.itemName} is currently unavailable.`};
+    }
 
-    // 1. Validate Quantity
     const minQty = menuItem.minimumQuantity || 1;
     if (quantity < minQty) {
         throw { status: 400, message: `The minimum required quantity for this item is ${minQty}.` };
@@ -35,64 +40,49 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
         throw { status: 400, message: `You can only add a maximum of ${menuItem.maximumQuantity} for this item.` };
     }
 
-    // 2. Validate Selected Variant
-    if (selectedVariant && selectedVariant.groupId && selectedVariant.variantId) {
-        const group = menuItem.variantGroups.find(g => g.groupId === selectedVariant.groupId);
-        if (!group || !group.variants.some(v => v.variantId === selectedVariant.variantId)) {
+    const normalizedVariant = (selectedVariant && selectedVariant.groupId && selectedVariant.variantId) ? selectedVariant : null;
+    const normalizedAddons = selectedAddons || [];
+
+    if (normalizedVariant) {
+        const group = menuItem.variantGroups.find(g => g.groupId === normalizedVariant.groupId);
+        if (!group || !group.variants.some(v => v.variantId === normalizedVariant.variantId)) {
             throw { status: 400, message: "Invalid variant selected." };
         }
-    } else {
-        selectedVariant = null; // Normalize if incomplete
     }
 
-    // 3. Validate Selected Addons
-    selectedAddons = selectedAddons || [];
-    if (selectedAddons.length > 0) {
+    if (normalizedAddons.length > 0) {
         const addonMap = new Map();
         menuItem.addonGroups.forEach(g => g.addons.forEach(a => addonMap.set(a.addonId, g.groupId)));
-        for (const selection of selectedAddons) {
+        for (const selection of normalizedAddons) {
             if (!addonMap.has(selection.addonId) || addonMap.get(selection.addonId) !== selection.groupId) {
                 throw { status: 400, message: `Invalid addon selected: ${selection.addonId}.` };
-            }
-        }
-        
-        const selectionsByGroup = new Map();
-        selectedAddons.forEach(sa => selectionsByGroup.set(sa.groupId, (selectionsByGroup.get(sa.groupId) || 0) + 1));
-
-        for (const group of menuItem.addonGroups) {
-            const selectionCount = selectionsByGroup.get(group.groupId) || 0;
-            if ((group.customizationBehavior === 'compulsory' || group.minSelection > 0) && selectionCount < group.minSelection) {
-                throw { status: 400, message: `You must select at least ${group.minSelection} addon(s) from "${group.groupTitle}".` };
-            }
-            if (group.maxSelection && selectionCount > group.maxSelection) {
-                throw { status: 400, message: `You can select at most ${group.maxSelection} addon(s) from "${group.groupTitle}".` };
             }
         }
     }
 
     return {
+        menuItem,
         cartField: menuItem.isFood ? 'foodCart' : 'groceriesCart',
         restaurantId: menuItem.restaurantId.toString(),
-        itemData: { menuItemId, quantity, selectedVariant, selectedAddons },
+        itemData: { 
+            menuItemId, 
+            quantity, 
+            selectedVariant: normalizedVariant, 
+            selectedAddons: normalizedAddons
+        },
     };
 };
 
-/**
- * Processes cart items to calculate subtotal and tax for each line item.
- * @param {Array} cart - The user's cart, populated with menu item details.
- * @returns {Array} An array of processed items with calculated pricing info.
- */
 const processCartItemsForSummary = (cart) => {
+    // This function remains the same
     return cart.map(cartItem => {
         const { menuItemId: menuItem, quantity, selectedVariant, selectedAddons } = cartItem;
         let lineItemSubtotal = menuItem.basePrice;
-
         if (selectedVariant?.variantId) {
             const group = menuItem.variantGroups.find(g => g.groupId === selectedVariant.groupId);
             const variant = group?.variants.find(v => v.variantId === selectedVariant.variantId);
             if (variant) lineItemSubtotal += (variant.additionalPrice || 0);
         }
-
         if (selectedAddons?.length) {
             selectedAddons.forEach(addon => {
                 const group = menuItem.addonGroups.find(g => g.groupId === addon.groupId);
@@ -100,20 +90,14 @@ const processCartItemsForSummary = (cart) => {
                 if (option) lineItemSubtotal += (option.price || 0);
             });
         }
-        
         const itemTotal = lineItemSubtotal * quantity;
         const itemTax = itemTotal * (menuItem.gst / 100);
-
         return { itemTotal, itemTax };
     });
 };
 
-/**
- * Calculates the final pricing summary for the entire cart.
- * @param {Array} processedItems - Array of items processed by `processCartItemsForSummary`.
- * @returns {Object} An object with final pricing details.
- */
 const calculatePricingSummary = (processedItems) => {
+    // This function remains the same
     if (processedItems.length === 0) {
         return { subtotal: 0, tax: 0, deliveryFee: 0, totalAmount: 0, itemCount: 0 };
     }
@@ -128,72 +112,51 @@ const calculatePricingSummary = (processedItems) => {
     };
 };
 
-
 // --- Main Controller Functions ---
 
-/**
- * @description Adds an item to the cart or increments its quantity. Enforces that all items in a cart must be from the same restaurant.
- * @access Private (User)
- */
 export const addItemToCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
         const { menuItemId, quantity = 1, selectedVariant, selectedAddons } = req.body;
 
-        const { cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariant, selectedAddons);
+        const { menuItem, cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariant, selectedAddons);
 
         const user = await User.findById(userId).populate(`${cartField}.menuItemId`, 'restaurantId');
         if (!user) {
             return res.status(404).json({ message: "User not found." });
         }
 
-        // Enforce Single Restaurant Rule
         const existingCart = user[cartField];
-        if (existingCart.length > 0) {
+        if (existingCart.length > 0 && existingCart[0].menuItemId) {
             const cartRestaurantId = existingCart[0].menuItemId.restaurantId.toString();
             if (cartRestaurantId !== restaurantId) {
                 return res.status(409).json({ message: "Your cart contains items from another restaurant. Please clear your cart to add items from this restaurant." });
             }
         }
-        
-        const itemIdentifier = {
-            'item.menuItemId': new mongoose.Types.ObjectId(menuItemId),
-            'item.selectedVariant.groupId': itemData.selectedVariant ? itemData.selectedVariant.groupId : null,
-            'item.selectedVariant.variantId': itemData.selectedVariant ? itemData.selectedVariant.variantId : null,
-            'item.selectedAddons': { $all: itemData.selectedAddons, $size: itemData.selectedAddons.length }
-        };
 
-        // Atomically increment quantity if the exact item configuration exists
-        const result = await User.updateOne(
-            { _id: userId },
-            { $inc: { [`${cartField}.$[item].quantity`]: quantity } },
-            { arrayFilters: [itemIdentifier] }
-        );
+        const cartItemKey = generateCartItemKey(itemData);
+        const existingItem = existingCart.find(item => item.cartItemKey === cartItemKey);
 
-        if (result.modifiedCount > 0) {
-            return res.status(200).json({ message: "Item quantity updated successfully." });
+        if (existingItem) {
+            const newQuantity = existingItem.quantity + quantity;
+            if (menuItem.maximumQuantity && newQuantity > menuItem.maximumQuantity) {
+                return res.status(400).json({ success: false, message: `This would exceed the maximum allowed quantity (${menuItem.maximumQuantity}) for this item.` });
+            }
+            existingItem.quantity = newQuantity;
         } else {
-            // If no item was incremented, add the new item to the cart
-            await User.updateOne(
-                { _id: userId },
-                { $push: { [cartField]: itemData } }
-            );
-            return res.status(201).json({ message: "Item added to cart successfully." });
+            existingCart.push({ ...itemData, cartItemKey });
         }
 
+        await user.save();
+        return res.status(200).json({ success: true, message: "Item added to cart successfully." });
     } catch (error) {
-        if (!error.status) {
-            logger.error("Error in addItemToCart", { error: error.message });
-        }
-        return res.status(error.status || 500).json({ message: error.message || "An unexpected server error occurred." });
+        logger.error("Error in addItemToCart", { error: error.message, status: error.status });
+        next(error);
     }
 };
 
-/**
- * @description Retrieves and enriches the contents of the user's food and groceries carts.
- * @access Private (User)
- */
 export const getCart = async (req, res, next) => {
+    // This function remains largely the same but returns the cartItemKey now.
     try {
         const userId = req.user?._id;
         const user = await User.findById(userId)
@@ -204,20 +167,16 @@ export const getCart = async (req, res, next) => {
         if (!user) {
             return res.status(404).json({ message: "User not found." });
         }
-
+        
         const enrichCart = (cart) => {
             if (!cart || cart.length === 0) return [];
             return cart.map(item => {
                 if (!item.menuItemId) return null;
                 const enrichedItem = { ...item };
-                
                 if (item.selectedVariant?.variantId) {
                     const group = item.menuItemId.variantGroups.find(g => g.groupId === item.selectedVariant.groupId);
-                    if (group) {
-                        enrichedItem.selectedVariant.details = group.variants.find(v => v.variantId === item.selectedVariant.variantId);
-                    }
+                    if (group) enrichedItem.selectedVariant.details = group.variants.find(v => v.variantId === item.selectedVariant.variantId);
                 }
-
                 if (item.selectedAddons?.length > 0) {
                     enrichedItem.selectedAddons = item.selectedAddons.map(sa => {
                         const group = item.menuItemId.addonGroups.find(g => g.groupId === sa.groupId);
@@ -233,7 +192,7 @@ export const getCart = async (req, res, next) => {
         };
 
         return res.status(200).json({
-            message: "Carts retrieved successfully.",
+            success: true, message: "Carts retrieved successfully.",
             data: {
                 foodCart: enrichCart(user.foodCart),
                 groceriesCart: enrichCart(user.groceriesCart)
@@ -245,152 +204,112 @@ export const getCart = async (req, res, next) => {
     }
 };
 
-/**
- * @description Retrieves a summary of the cart including item count and final pricing.
- * @access Private (User)
- */
 export const getCartSummary = async (req, res, next) => {
+    // This function remains the same
     try {
         const userId = req.user?._id;
-        const { cartType } = req.query; // Expects 'food' or 'groceries'
-
+        const { cartType } = req.query;
         if (!['food', 'groceries'].includes(cartType)) {
-            return res.status(400).json({ message: "A valid cartType ('food' or 'groceries') is required in query params." });
+            return res.status(400).json({ message: "A valid cartType ('food' or 'groceries') is required." });
         }
         const cartField = cartType === 'food' ? 'foodCart' : 'groceriesCart';
-
         const user = await User.findById(userId).populate(`${cartField}.menuItemId`).lean();
         if (!user) {
             return res.status(404).json({ message: "User not found." });
         }
-        
         const cart = user[cartField];
         const processedItems = processCartItemsForSummary(cart);
         const pricingSummary = calculatePricingSummary(processedItems);
-        
         const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
-
-        return res.status(200).json({
-            success: true,
-            data: {
-                itemCount: totalItems,
-                ...pricingSummary
-            }
-        });
+        return res.status(200).json({ success: true, data: { itemCount: totalItems, ...pricingSummary } });
     } catch (error) {
         logger.error("Error getting cart summary", { error: error.message });
         next(error);
     }
 };
 
-/**
- * @description Updates the quantity of a specific item configuration in the cart. Removes the item if quantity is 0.
- * @access Private (User)
- */
 export const updateItemQuantity = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        const { cartType, menuItemId, quantity, selectedVariant, selectedAddons } = req.body;
+        // **API CHANGE**: Now uses cartItemKey
+        const { cartType, cartItemKey, quantity } = req.body;
 
         if (!['foodCart', 'groceriesCart'].includes(cartType)) {
             return res.status(400).json({ message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
-        if (typeof quantity === 'undefined') {
-            return res.status(400).json({ message: "Quantity is required." });
+        if (!cartItemKey || typeof quantity === 'undefined') {
+            return res.status(400).json({ message: "cartItemKey and quantity are required." });
         }
 
-        const menuItem = await MenuItem.findById(menuItemId).select('minimumQuantity maximumQuantity').lean();
-        if (!menuItem) {
-            return res.status(404).json({ message: "Menu item not found." });
-        }
-        
         if (quantity === 0) {
-            // Forward to removeItemFromCart logic
-            return removeItemFromCart(req, res);
+            return removeItemFromCart(req, res, next);
         }
 
+        // We need to fetch the user to validate min/max quantity against the specific item
+        const user = await User.findById(userId).populate(`${cartType}.menuItemId`);
+        const cart = user[cartType];
+        const itemToUpdate = cart.find(item => item.cartItemKey === cartItemKey);
+
+        if (!itemToUpdate) {
+            return res.status(404).json({ message: "Item not found in cart." });
+        }
+
+        const menuItem = itemToUpdate.menuItemId;
         if (quantity < (menuItem.minimumQuantity || 1)) {
             return res.status(400).json({ message: `The minimum required quantity is ${menuItem.minimumQuantity || 1}.` });
         }
         if (menuItem.maximumQuantity && quantity > menuItem.maximumQuantity) {
             return res.status(400).json({ message: `The maximum allowed quantity is ${menuItem.maximumQuantity}.` });
         }
-        
-        const result = await User.updateOne(
-            { _id: userId },
-            { $set: { [`${cartType}.$[item].quantity`]: quantity } },
-            { 
-                arrayFilters: [{ 
-                    'item.menuItemId': new mongoose.Types.ObjectId(menuItemId), 
-                    'item.selectedVariant': selectedVariant || null, 
-                    'item.selectedAddons': { $all: selectedAddons || [], $size: (selectedAddons || []).length } 
-                }] 
-            }
-        );
-        
-        if (result.matchedCount === 0) {
-            return res.status(404).json({ message: "Item with the specified configuration not found in cart." });
-        }
 
-        return res.status(200).json({ message: "Item quantity updated successfully." });
+        itemToUpdate.quantity = quantity;
+        await user.save();
+        
+        return res.status(200).json({ success: true, message: "Item quantity updated successfully." });
     } catch (error) {
         logger.error("Error updating item quantity", { error: error.message });
         next(error);
     }
 };
 
-/**
- * @description Removes a specific item configuration from the cart.
- * @access Private (User)
- */
 export const removeItemFromCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        const { cartType, menuItemId, selectedVariant, selectedAddons } = req.body;
+        // **API CHANGE**: Now uses cartItemKey
+        const { cartType, cartItemKey } = req.body;
 
         if (!['foodCart', 'groceriesCart'].includes(cartType)) {
             return res.status(400).json({ message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
-        
+        if (!cartItemKey) {
+            return res.status(400).json({ message: "cartItemKey is required." });
+        }
+
         const result = await User.updateOne(
             { _id: userId },
-            { $pull: { [cartType]: { 
-                menuItemId: new mongoose.Types.ObjectId(menuItemId),
-                selectedVariant: selectedVariant || null,
-                selectedAddons: selectedAddons || []
-            }}}
+            { $pull: { [cartType]: { cartItemKey: cartItemKey } } }
         );
 
         if (result.modifiedCount === 0) {
-            return res.status(404).json({ message: "Item with the specified configuration not found in cart." });
+            return res.status(404).json({ message: "Item not found in cart." });
         }
 
-        return res.status(200).json({ message: "Item removed from cart successfully." });
+        return res.status(200).json({ success: true, message: "Item removed from cart successfully." });
     } catch (error) {
         logger.error("Error removing item from cart", { error: error.message });
         next(error);
     }
 };
 
-/**
- * @description Clears all items from either the food or groceries cart.
- * @access Private (User)
- */
 export const clearCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
         const { cartType } = req.body;
-
         if (!['food', 'groceries'].includes(cartType)) {
             return res.status(400).json({ message: "A valid cartType ('food' or 'groceries') is required." });
         }
         const cartField = cartType === 'food' ? 'foodCart' : 'groceriesCart';
-
-        await User.updateOne(
-            { _id: userId },
-            { $set: { [cartField]: [] } }
-        );
-
+        await User.updateOne({ _id: userId }, { $set: { [cartField]: [] } });
         return res.status(200).json({ message: `Your ${cartType} cart has been cleared.` });
     } catch (error) {
         logger.error("Error clearing cart", { error: error.message });

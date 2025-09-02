@@ -1,12 +1,12 @@
 import mongoose from "mongoose";
 const restaurantTableSchema = new mongoose.Schema({
-  restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" },
-  tableNumber: String,
-  capacity: Number,
+  restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", index: true },
+  tableNumber: { type: String, required: true },
+  capacity: { type: Number, required: true },
   area: String,
-
   availability: [
     {
+      _id: false,
       day: { 
         type: String, 
         enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
@@ -16,17 +16,16 @@ const restaurantTableSchema = new mongoose.Schema({
       closeTime: String,
       slots: [
         {
+          _id: false,
           slotId: String,
           startTime: String,
           endTime: String,
-          isBooked: Boolean
+          isBooked: { type: Boolean, default: false }
         }
       ]
     }
   ],
+  isActive: { type: Boolean, default: true },
+}, { timestamps: true }); // Added timestamps and removed manual dates
 
-  isActive: Boolean,
-  createdAt: Date,
-  updatedAt: Date
-});
 export default mongoose.model("RestaurantTables", restaurantTableSchema);

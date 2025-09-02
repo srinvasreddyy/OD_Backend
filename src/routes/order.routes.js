@@ -26,7 +26,7 @@ router.get('/restaurant/reports/orders', validateRestaurant, getRestaurantOrders
 router.get('/restaurant/reports/menu-performance', validateRestaurant, getMenuItemPerformance);
 router.get('/restaurant/new', validateRestaurant, getNewRestaurantOrders);
 router.get('/restaurant', validateRestaurant, getRestaurantOrders);
-router.get('/restaurant/:orderId', validateRestaurant, getOrderDetails); // New route for owners
+router.get('/restaurant/:orderId', validateRestaurant, getOrderDetails); 
 router.patch('/:orderId/respond', validateRestaurant, respondToOrder);
 router.patch('/:orderId/status', validateRestaurant, updateOrderStatus);
 router.patch('/:orderId/assign-delivery', validateRestaurant, assignDeliveryPartner);

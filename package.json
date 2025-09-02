@@ -17,14 +17,17 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^7.3.1",
     "jsonwebtoken": "^9.0.2",
+    "lodash": "^4.17.21",
     "mongoose": "^8.5.1",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^6.9.14",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "streamifier": "^0.1.1",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "winston": "^3.13.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"

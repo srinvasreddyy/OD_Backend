@@ -44,7 +44,7 @@ passport.use(
           email: email,
           avatarUrl: avatarUrl,
           userType: 'customer', // Default role for Google sign-ups
-          isPhoneVerified: true, // Email is verified by Google, so we can consider this true
+          isEmailVerified: true, // CORRECTED: Google verifies the email, so set this flag.
         });
         await newUser.save();
         
