@@ -72,7 +72,7 @@ const calculateOrderPricing = (processedItems) => {
 // --- Main Controller Functions ---
 
 export const placeOrder = async (req, res, next) => {
-    const { _id: userId } = req.user;
+    const  userId  = req.user?._id;
     const { orderType, deliveryAddress, paymentType, cartType } = req.body;
 
     if (!['delivery', 'pickup', 'dine-in'].includes(orderType)) {
@@ -142,7 +142,7 @@ export const placeOrder = async (req, res, next) => {
 
 export const getUserOrders = async (req, res, next) => {
     try {
-        const { _id: userId } = req.user;
+        const  userId  = req.user?._id;
         const { page = 1, limit = 10 } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const orders = await Order.find({ customerId: userId }).populate('restaurantId', 'restaurantName address').sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit));
@@ -156,7 +156,7 @@ export const getUserOrders = async (req, res, next) => {
 
 export const getRestaurantOrders = async (req, res, next) => {
     try {
-        const { _id: restaurantId } = req.restaurant;
+        const  restaurantId  = req.restaurant?._id;
         const { page = 1, limit = 10, status, acceptanceStatus } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
@@ -176,7 +176,7 @@ export const getRestaurantOrders = async (req, res, next) => {
 
 export const getNewRestaurantOrders = async (req, res, next) => {
     try {
-        const { _id: restaurantId } = req.restaurant;
+        const  restaurantId  = req.restaurant?._id;
         const { page = 1, limit = 10 } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const query = { restaurantId, status: 'placed', acceptanceStatus: 'pending' };
@@ -191,9 +191,9 @@ export const getNewRestaurantOrders = async (req, res, next) => {
 
 export const respondToOrder = async (req, res, next) => {
     try {
-        const { orderId } = req.params;
-        const { acceptance } = req.body; 
-        const { _id: restaurantId } = req.restaurant;
+        const orderId  = req.params?.orderId;
+        const acceptance  = req.body?.acceptance; 
+        const  restaurantId  = req.restaurant?._id;
 
         if (!['accepted', 'rejected'].includes(acceptance)) {
             return res.status(400).json({ success: false, message: "Invalid acceptance value. Must be 'accepted' or 'rejected'." });
@@ -223,10 +223,10 @@ export const respondToOrder = async (req, res, next) => {
 
 export const assignDeliveryPartner = async (req, res, next) => {
     try {
-        const { orderId } = req.params;
-        const { deliveryPartnerId } = req.body;
-        const { _id: restaurantId } = req.restaurant;
-
+        const  orderId  = req.params?.orderId;
+        const  deliveryPartnerId  = req.body?.deliveryPartnerId;
+        const restaurantId = req.restaurant?._id
+        const restaurantPartnerList = req.restaurant?.deliveryPartners
         if (!mongoose.Types.ObjectId.isValid(deliveryPartnerId)) {
             return res.status(400).json({ success: false, message: "Invalid delivery partner ID format." });
         }
@@ -243,10 +243,22 @@ export const assignDeliveryPartner = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Cannot assign delivery partner to an order that has not been accepted." });
         }
 
+        // --- NEW VALIDATION ---
+        // 1. Check if the partner belongs to this restaurant
+        const isAssociated = restaurantPartnerList.some(id => id.toString() === deliveryPartnerId);
+        if (!isAssociated) {
+            return res.status(403).json({ success: false, message: "This delivery partner is not associated with your restaurant." });
+        }
+        
+        // 2. Check if the delivery partner is available for duty
         const deliveryPartner = await User.findOne({ _id: deliveryPartnerId, userType: 'delivery_partner' });
         if (!deliveryPartner) {
-            return res.status(404).json({ success: false, message: "Delivery partner not found or user is not a delivery partner." });
+            return res.status(404).json({ success: false, message: "Delivery partner not found." });
         }
+        if (!deliveryPartner.deliveryPartnerProfile?.isAvailable) {
+            return res.status(409).json({ success: false, message: "This delivery partner is currently unavailable for new orders." });
+        }
+        // --- END NEW VALIDATION ---
 
         order.assignedDeliveryPartnerId = deliveryPartnerId;
         order.status = 'out_for_delivery'; 
@@ -265,7 +277,7 @@ export const assignDeliveryPartner = async (req, res, next) => {
  */
 export const getOrderDetails = async (req, res, next) => {
     try {
-        const { orderId } = req.params;
+        const  orderId  = req.params?.orderId;
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
         }
@@ -292,9 +304,9 @@ export const getOrderDetails = async (req, res, next) => {
 
 export const updateOrderStatus = async (req, res, next) => {
     try {
-        const { orderId } = req.params;
+        const orderId  = req.params?.orderId;
         const { status, paymentStatus } = req.body;
-        const { _id: restaurantId } = req.restaurant;
+        const restaurantId = req.restaurant?._id;
 
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
@@ -334,8 +346,8 @@ export const updateOrderStatus = async (req, res, next) => {
 
 export const cancelOrder = async (req, res, next) => {
     try {
-        const { orderId } = req.params;
-        const { _id: userId } = req.user;
+        const orderId  = req.params?.orderId;
+        const userId = req.user?._id;
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
         }
@@ -360,7 +372,7 @@ export const cancelOrder = async (req, res, next) => {
 
 export const getRestaurantStats = async (req, res, next) => {
     try {
-        const { _id: restaurantId } = req.restaurant;
+        const  restaurantId  = req.restaurant?._id;
         
         const now = new Date();
         const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -423,7 +435,7 @@ export const getRestaurantStats = async (req, res, next) => {
 };
 
 export const getRestaurantSalesReport = async (req, res, next) => {
-    const { _id: restaurantId } = req.restaurant;
+    const restaurantId  = req.restaurant?._id;
     const { startDate, endDate } = req.query;
 
     try {
@@ -463,7 +475,7 @@ export const getRestaurantSalesReport = async (req, res, next) => {
 };
 
 export const getRestaurantOrdersReport = async (req, res, next) => {
-    const { _id: restaurantId } = req.restaurant;
+    const  restaurantId  = req.restaurant?._id;
 
     try {
         const ordersReport = await Order.aggregate([
@@ -495,7 +507,7 @@ export const getRestaurantOrdersReport = async (req, res, next) => {
 };
 
 export const getMenuItemPerformance = async (req, res, next) => {
-    const { _id: restaurantId } = req.restaurant;
+    const  restaurantId  = req.restaurant?._id;
 
     try {
         const itemPerformance = await Order.aggregate([

@@ -1,3 +1,4 @@
+// OD_Backend/src/models/RestaurantDocuments.js
 import mongoose from "mongoose";
 const restaurantDocumentsSchema = new mongoose.Schema({
     restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", required: true, unique: true },
@@ -28,6 +29,7 @@ const restaurantDocumentsSchema = new mongoose.Schema({
     isVerified: { type: Boolean, default: false }
   },
   verificationStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  remarks: { type: String, trim: true }, // Admin feedback, e.g., reason for rejection
 }, { timestamps: true }); // Added timestamps
 
 export default mongoose.model("RestaurantDocuments", restaurantDocumentsSchema);

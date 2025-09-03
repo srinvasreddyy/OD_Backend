@@ -1,15 +1,25 @@
 import mongoose from "mongoose";
 import Restaurant from "../models/Restaurant.js";
+import RestaurantDocuments from "../models/RestaurantDocuments.js";
 
 /**
- * @description Get a paginated list of all active restaurants, with filtering options.
+ * @description Get a paginated list of all active and APPROVED restaurants.
  * @route GET /api/restaurants
  * @access Public
  */
 export const getRestaurants = async (req, res) => {
     try {
         const { page = 1, limit = 10, type, search } = req.query;
-        const query = { isActive: true };
+
+        // Find approved restaurant IDs first
+        const approvedDocs = await RestaurantDocuments.find({ verificationStatus: 'approved' }).select('restaurantId').lean();
+        const approvedRestaurantIds = approvedDocs.map(doc => doc.restaurantId);
+
+        // Base query now includes approval status and active status
+        const query = { 
+            isActive: true,
+            _id: { $in: approvedRestaurantIds }
+        };
 
         if (type && ['food_delivery_and_dining', 'groceries', 'food_delivery'].includes(type)) {
             query.restaurantType = type;
@@ -42,22 +52,28 @@ export const getRestaurants = async (req, res) => {
 };
 
 /**
- * @description Get public details for a single restaurant.
+ * @description Get public details for a single approved and active restaurant.
  * @route GET /api/restaurants/:id
  * @access Public
  */
 export const getRestaurantById = async (req, res) => {
     try {
-        const { id } = req.params;
+        const { id } = req.params?.restaurantId;
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, message: "Invalid Restaurant ID." });
+        }
+
+        // Check verification status
+        const doc = await RestaurantDocuments.findOne({ restaurantId: id, verificationStatus: 'approved' }).lean();
+        if (!doc) {
+            return res.status(404).json({ success: false, message: "Restaurant not found or has not been approved." });
         }
 
         const restaurant = await Restaurant.findOne({ _id: id, isActive: true })
             .select('-password -currentOTP -otpGeneratedAt');
 
         if (!restaurant) {
-            return res.status(404).json({ success: false, message: "Restaurant not found." });
+            return res.status(404).json({ success: false, message: "Restaurant not found or is currently inactive." });
         }
 
         return res.status(200).json({ success: true, data: restaurant });
@@ -76,7 +92,7 @@ export const getRestaurantById = async (req, res) => {
  */
 export const updateRestaurantProfile = async (req, res) => {
     try {
-        const { _id: restaurantId } = req.restaurant;
+        const  restaurantId  = req.restaurant?._id;
         const { restaurantName, ownerFullName, phoneNumber, primaryContactName, address } = req.body;
 
         const updateData = {};
@@ -117,7 +133,8 @@ export const updateRestaurantProfile = async (req, res) => {
  */
 export const toggleRestaurantStatus = async (req, res) => {
     try {
-        const { _id: restaurantId, isActive } = req.restaurant;
+        const  restaurantId  = req.restaurant?._id;
+        const  isActive  = req.restaurant?.isActive;
 
         const newStatus = !isActive;
 
