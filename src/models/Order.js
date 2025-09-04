@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 const orderSchema = new mongoose.Schema({
   orderNumber: { type: String, unique: true, required: true },
   billNumber: String,
+  sessionId: { type: String, index: true },
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", required: true, index: true },
   customerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
   customerDetails: {

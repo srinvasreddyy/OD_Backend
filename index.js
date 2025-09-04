@@ -21,7 +21,7 @@ import announcementRoutes from "./src/routes/announcements.routes.js";
 import adminRoutes from './src/routes/admin.routes.js';
 import ownerRoutes from './src/routes/owner.routes.js'; // <-- NEW
 import deliveryRoutes from './src/routes/delivery.routes.js'; // <-- NEW
-
+import paymentRoutes from "./src/routes/payment.routes.js";
 const app = express();
 
 // --- Core Middleware ---
@@ -63,6 +63,7 @@ app.use('/api/announcements', generalApiLimiter, announcementRoutes);
 app.use('/api/admin', generalApiLimiter, adminRoutes);
 app.use('/api/owner', generalApiLimiter, ownerRoutes);
 app.use('/api/delivery', generalApiLimiter, deliveryRoutes);
+app.use("/api/payment", paymentRoutes);
 
 
 // --- Health Check Route ---

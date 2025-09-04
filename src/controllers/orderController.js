@@ -5,6 +5,9 @@ import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import Restaurant from "../models/Restaurant.js";
 import { DELIVERY_FEE } from "../../constants.js";
 import logger from "../utils/logger.js";
+import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // --- Helper Functions (omitted for brevity, no changes) ---
 const validateCart = (cart) => {
@@ -69,11 +72,39 @@ const calculateOrderPricing = (processedItems) => {
 };
 
 
-// --- Main Controller Functions ---
 
+// Helper to create order object
+function createOrderObject({
+    user,
+    restaurantId,
+    orderType,
+    deliveryAddress,
+    orderedItemsToSave,
+    pricing,
+    paymentType,
+    sessionId = null
+}) {
+    return new Order({
+        _id: new mongoose.Types.ObjectId(),
+        orderNumber: generateUniqueOrderNumber(),
+        restaurantId,
+        customerId: user._id,
+        customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
+        orderType,
+        deliveryAddress: orderType === 'delivery' ? deliveryAddress : null,
+        orderedItems: orderedItemsToSave,
+        pricing,
+        paymentType,
+        paymentStatus: paymentType === 'card' ? 'paid' : 'pending',
+        acceptanceStatus: 'pending',
+        ...(sessionId ? { sessionId } : {})
+    });
+}
+
+// --- Main Controller Functions ---
 export const placeOrder = async (req, res, next) => {
-    const  userId  = req.user?._id;
-    const { orderType, deliveryAddress, paymentType, cartType } = req.body;
+    const userId = req.user?._id;
+    const { orderType, deliveryAddress, paymentType, cartType, sessionId } = req.body;
 
     if (!['delivery', 'pickup', 'dine-in'].includes(orderType)) {
         return res.status(400).json({ success: false, message: "Invalid order type specified." });
@@ -110,26 +141,66 @@ export const placeOrder = async (req, res, next) => {
         const pricing = calculateOrderPricing(processedItems);
         const orderedItemsToSave = processedItems.map(({ _itemTax, ...rest }) => rest);
 
-        const order = new Order({
-            _id: new mongoose.Types.ObjectId(),
-            orderNumber: generateUniqueOrderNumber(),
-            restaurantId,
-            customerId: userId,
-            customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
-            orderType,
-            deliveryAddress: orderType === 'delivery' ? deliveryAddress : null,
-            orderedItems: orderedItemsToSave,
-            pricing,
-            paymentType,
-            acceptanceStatus: 'pending',
-        });
-
-        await order.save({ session });
-        user[cartType] = [];
-        await user.save({ session });
-
-        await session.commitTransaction();
-        return res.status(201).json({ success: true, message: "Order placed successfully! Waiting for restaurant to accept.", data: order });
+        // Payment logic
+        if (paymentType === 'cash') {
+            const order = createOrderObject({
+                user,
+                restaurantId,
+                orderType,
+                deliveryAddress,
+                orderedItemsToSave,
+                pricing,
+                paymentType
+            });
+            await order.save({ session });
+            user[cartType] = [];
+            await user.save({ session });
+            await session.commitTransaction();
+            return res.status(201).json({ success: true, message: "Order placed successfully! Waiting for restaurant to accept.", data: order });
+        } else if (paymentType === 'card') {
+            if (!sessionId) {
+                return res.status(400).json({ success: false, message: "sessionId is required for card payments." });
+            }
+            let checkoutSession;
+            try {
+                checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
+            } catch (err) {
+                return res.status(400).json({ success: false, message: "Invalid Stripe sessionId." });
+            }
+            if (checkoutSession.payment_status !== 'paid') {
+                return res.status(400).json({ success: false, message: "Payment not completed." });
+            }
+            // Safety check: Stripe amount vs backend total
+            const stripeAmount = checkoutSession.amount_total;
+            const backendAmount = Math.round((pricing.totalAmount || pricing.grandTotal) * 100); // Stripe uses cents
+            if (stripeAmount !== backendAmount) {
+                return res.status(400).json({ success: false, message: "Payment amount mismatch. Please contact support." });
+            }
+            // Check for duplicate order
+            const existingOrder = await Order.findOne({ sessionId }).session(session);
+            if (existingOrder) {
+                await session.commitTransaction();
+                return res.status(200).json({ success: true, message: "Order already exists for this payment.", data: existingOrder });
+            }
+            // Create order
+            const order = createOrderObject({
+                user,
+                restaurantId,
+                orderType,
+                deliveryAddress,
+                orderedItemsToSave,
+                pricing,
+                paymentType,
+                sessionId
+            });
+            await order.save({ session });
+            user[cartType] = [];
+            await user.save({ session });
+            await session.commitTransaction();
+            return res.status(201).json({ success: true, message: "Order placed successfully! Waiting for restaurant to accept.", data: order });
+        } else {
+            return res.status(400).json({ success: false, message: "Invalid payment type." });
+        }
 
     } catch (error) {
         await session.abortTransaction();
