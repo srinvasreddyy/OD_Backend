@@ -2,14 +2,12 @@ import mongoose from "mongoose";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
-import Restaurant from "../models/Restaurant.js";
 import { DELIVERY_FEE } from "../../constants.js";
 import logger from "../utils/logger.js";
 import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// --- Helper Functions (omitted for brevity, no changes) ---
 const validateCart = (cart) => {
     if (!cart || cart.length === 0) {
         return { error: "Cannot place an order with an empty cart." };
@@ -102,6 +100,8 @@ function createOrderObject({
 }
 
 // --- Main Controller Functions ---
+import MenuItem from "../models/MenuItem.js"; 
+
 export const placeOrder = async (req, res, next) => {
     const userId = req.user?._id;
     const { orderType, deliveryAddress, paymentType, cartType, sessionId } = req.body;
@@ -119,92 +119,72 @@ export const placeOrder = async (req, res, next) => {
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
+
         const user = await User.findById(userId).populate(`${cartType}.menuItemId`).session(session);
         if (!user) {
             throw new Error("Authenticated user not found in database.");
         }
 
-        const { error: cartError, restaurantId } = validateCart(user[cartType]);
+        const cart = user[cartType];
+        const { error: cartError, restaurantId } = validateCart(cart);
         if (cartError) {
             return res.status(400).json({ success: false, message: cartError });
         }
 
-        const restaurant = await Restaurant.findById(restaurantId).session(session).lean();
-        if (!restaurant) {
-            throw new Error("Restaurant not found.");
-        }
-        if ((restaurant.restaurantType === 'groceries' || restaurant.restaurantType === 'food_delivery') && orderType === 'dine-in') {
-            return res.status(400).json({ success: false, message: "Dine-in is not available for this restaurant." });
-        }
+        // --- Re-fetch fresh item data for price & availability integrity ---
+        const itemIds = cart.map(item => item.menuItemId._id);
+        const freshMenuItems = await MenuItem.find({ '_id': { $in: itemIds } }).session(session).lean();
+        const freshMenuItemsMap = new Map(freshMenuItems.map(item => [item._id.toString(), item]));
 
-        const processedItems = processCartItems(user[cartType]);
+        const cartWithFreshData = cart.map(cartItem => {
+            const freshItem = freshMenuItemsMap.get(cartItem.menuItemId._id.toString());
+            if (!freshItem) {
+                throw new Error(`Item "${cartItem.menuItemId.itemName}" is no longer available.`);
+            }
+            return { ...cartItem, menuItemId: freshItem };
+        });
+
+        // All subsequent calculations use the guaranteed fresh data
+        const processedItems = processCartItems(cartWithFreshData);
         const pricing = calculateOrderPricing(processedItems);
         const orderedItemsToSave = processedItems.map(({ _itemTax, ...rest }) => rest);
 
-        // Payment logic
-        if (paymentType === 'cash') {
-            const order = createOrderObject({
-                user,
-                restaurantId,
-                orderType,
-                deliveryAddress,
-                orderedItemsToSave,
-                pricing,
-                paymentType
-            });
-            await order.save({ session });
-            user[cartType] = [];
-            await user.save({ session });
-            await session.commitTransaction();
-            return res.status(201).json({ success: true, message: "Order placed successfully! Waiting for restaurant to accept.", data: order });
-        } else if (paymentType === 'card') {
-            if (!sessionId) {
+        // --- Payment Verification with Fresh Pricing ---
+        if (paymentType === 'card') {
+             if (!sessionId) {
                 return res.status(400).json({ success: false, message: "sessionId is required for card payments." });
             }
-            let checkoutSession;
-            try {
-                checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
-            } catch (err) {
-                return res.status(400).json({ success: false, message: "Invalid Stripe sessionId." });
-            }
+            const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
             if (checkoutSession.payment_status !== 'paid') {
                 return res.status(400).json({ success: false, message: "Payment not completed." });
             }
-            // Safety check: Stripe amount vs backend total
             const stripeAmount = checkoutSession.amount_total;
-            const backendAmount = Math.round((pricing.totalAmount || pricing.grandTotal) * 100); // Stripe uses cents
+            const backendAmount = Math.round(pricing.totalAmount * 100);
             if (stripeAmount !== backendAmount) {
-                return res.status(400).json({ success: false, message: "Payment amount mismatch. Please contact support." });
+                return res.status(400).json({ success: false, message: `Price mismatch detected due to recent menu updates. Expected ${pricing.totalAmount}. Please review your cart and try again.` });
             }
-            // Check for duplicate order
             const existingOrder = await Order.findOne({ sessionId }).session(session);
             if (existingOrder) {
                 await session.commitTransaction();
                 return res.status(200).json({ success: true, message: "Order already exists for this payment.", data: existingOrder });
             }
-            // Create order
-            const order = createOrderObject({
-                user,
-                restaurantId,
-                orderType,
-                deliveryAddress,
-                orderedItemsToSave,
-                pricing,
-                paymentType,
-                sessionId
-            });
-            await order.save({ session });
-            user[cartType] = [];
-            await user.save({ session });
-            await session.commitTransaction();
-            return res.status(201).json({ success: true, message: "Order placed successfully! Waiting for restaurant to accept.", data: order });
-        } else {
-            return res.status(400).json({ success: false, message: "Invalid payment type." });
         }
+        
+        const order = createOrderObject({ user, restaurantId, orderType, deliveryAddress, orderedItemsToSave, pricing, paymentType, sessionId });
+        await order.save({ session });
+
+        user[cartType] = [];
+        await user.save({ session });
+
+        await session.commitTransaction();
+        return res.status(201).json({ success: true, message: "Order placed successfully! Waiting for restaurant to accept.", data: order });
 
     } catch (error) {
         await session.abortTransaction();
         logger.error("Error placing order", { error: error.message });
+        if (error.message.includes("is no longer available")) {
+            return res.status(409).json({ success: false, message: error.message });
+        }
         next(error);
     } finally {
         session.endSession();
@@ -262,13 +242,14 @@ export const getNewRestaurantOrders = async (req, res, next) => {
 
 export const respondToOrder = async (req, res, next) => {
     try {
-        const orderId  = req.params?.orderId;
-        const acceptance  = req.body?.acceptance; 
-        const  restaurantId  = req.restaurant?._id;
+        const { orderId } = req.params;
+        const { acceptance } = req.body;
+        const restaurantId = req.restaurant?._id;
 
         if (!['accepted', 'rejected'].includes(acceptance)) {
             return res.status(400).json({ success: false, message: "Invalid acceptance value. Must be 'accepted' or 'rejected'." });
         }
+
         const order = await Order.findById(orderId);
         if (!order) return res.status(404).json({ success: false, message: "Order not found." });
         if (order.restaurantId.toString() !== restaurantId.toString()) {
@@ -278,11 +259,26 @@ export const respondToOrder = async (req, res, next) => {
             return res.status(400).json({ success: false, message: `This order has already been ${order.acceptanceStatus}.` });
         }
 
+        // --- Refund logic for rejected pre-paid orders ---
+        if (acceptance === 'rejected' && order.paymentType === 'card' && order.paymentStatus === 'paid') {
+            try {
+                const checkoutSession = await stripe.checkout.sessions.retrieve(order.sessionId);
+                if (checkoutSession.payment_intent) {
+                    await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
+                    order.paymentStatus = 'refunded'; // Update payment status on success
+                }
+            } catch (refundError) {
+                logger.error("Stripe refund failed on order rejection", { orderId, error: refundError.message });
+                // Halt the process to allow for manual intervention if refund fails
+                return res.status(500).json({ success: false, message: "Order rejection failed because the customer refund could not be processed." });
+            }
+        }
+
         order.acceptanceStatus = acceptance;
         if (acceptance === 'rejected') {
             order.status = 'cancelled';
         }
-        
+
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: `Order successfully ${acceptance}.`, data: updatedOrder });
 
@@ -293,16 +289,20 @@ export const respondToOrder = async (req, res, next) => {
 };
 
 export const assignDeliveryPartner = async (req, res, next) => {
+    const session = await mongoose.startSession();
     try {
+        session.startTransaction();
+
         const  orderId  = req.params?.orderId;
         const  deliveryPartnerId  = req.body?.deliveryPartnerId;
         const restaurantId = req.restaurant?._id
         const restaurantPartnerList = req.restaurant?.deliveryPartners
+
         if (!mongoose.Types.ObjectId.isValid(deliveryPartnerId)) {
             return res.status(400).json({ success: false, message: "Invalid delivery partner ID format." });
         }
 
-        const order = await Order.findById(orderId);
+        const order = await Order.findById(orderId).session(session);
         if (!order) return res.status(404).json({ success: false, message: "Order not found." });
         if (order.restaurantId.toString() !== restaurantId.toString()) {
             return res.status(403).json({ success: false, message: "You are not authorized to modify this order." });
@@ -314,31 +314,38 @@ export const assignDeliveryPartner = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Cannot assign delivery partner to an order that has not been accepted." });
         }
 
-        // --- NEW VALIDATION ---
-        // 1. Check if the partner belongs to this restaurant
         const isAssociated = restaurantPartnerList.some(id => id.toString() === deliveryPartnerId);
         if (!isAssociated) {
             return res.status(403).json({ success: false, message: "This delivery partner is not associated with your restaurant." });
         }
         
-        // 2. Check if the delivery partner is available for duty
-        const deliveryPartner = await User.findOne({ _id: deliveryPartnerId, userType: 'delivery_partner' });
+        const deliveryPartner = await User.findOne({ _id: deliveryPartnerId, userType: 'delivery_partner' }).session(session);
         if (!deliveryPartner) {
             return res.status(404).json({ success: false, message: "Delivery partner not found." });
         }
         if (!deliveryPartner.deliveryPartnerProfile?.isAvailable) {
             return res.status(409).json({ success: false, message: "This delivery partner is currently unavailable for new orders." });
         }
-        // --- END NEW VALIDATION ---
 
+        // --- Atomic Updates within Transaction ---
         order.assignedDeliveryPartnerId = deliveryPartnerId;
-        order.status = 'out_for_delivery'; 
-        const updatedOrder = await order.save();
-        return res.status(200).json({ success: true, message: "Delivery partner assigned successfully.", data: updatedOrder });
+        order.status = 'out_for_delivery';
+        
+        deliveryPartner.deliveryPartnerProfile.isAvailable = false;
+
+        await order.save({ session });
+        await deliveryPartner.save({ session });
+
+        await session.commitTransaction();
+        
+        return res.status(200).json({ success: true, message: "Delivery partner assigned successfully.", data: order });
 
     } catch (error) {
+        await session.abortTransaction();
         logger.error("Error assigning delivery partner", { error: error.message });
         next(error);
+    } finally {
+        session.endSession();
     }
 };
 
@@ -375,40 +382,39 @@ export const getOrderDetails = async (req, res, next) => {
 
 export const updateOrderStatus = async (req, res, next) => {
     try {
-        const orderId  = req.params?.orderId;
-        const { status, paymentStatus } = req.body;
+        const { orderId } = req.params;
+        const { status } = req.body;
         const restaurantId = req.restaurant?._id;
 
-        if (!mongoose.Types.ObjectId.isValid(orderId)) {
-            return res.status(400).json({ success: false, message: "Invalid order ID format." });
+        if (!status) {
+            return res.status(400).json({ success: false, message: "No status provided for update." });
         }
-        const updates = {};
-        if (status) {
-            if (!['placed', 'out_for_delivery', 'delivered', 'cancelled'].includes(status)) {
-                return res.status(400).json({ success: false, message: "Invalid 'status' value provided." });
-            }
-            updates.status = status;
-        }
-        if (paymentStatus) {
-            if (!['pending', 'paid', 'failed', 'refunded'].includes(paymentStatus)) {
-                return res.status(400).json({ success: false, message: "Invalid 'paymentStatus' value provided." });
-            }
-            updates.paymentStatus = paymentStatus;
+        
+        const order = await Order.findOne({ _id: orderId, restaurantId: restaurantId });
+        if (!order) {
+            return res.status(404).json({ success: false, message: "Order not found or you are not authorized to update it." });
         }
 
-        if (Object.keys(updates).length === 0) {
-            return res.status(400).json({ success: false, message: "No valid fields provided for update." });
+        // --- Enforce valid status transitions ---
+        const allowedTransitions = {
+            'placed': ['out_for_delivery', 'cancelled'],
+            'out_for_delivery': ['delivered'],
+            'delivered': [], // Terminal state
+            'cancelled': [], // Terminal state
+        };
+
+        if (order.acceptanceStatus !== 'accepted' && status !== 'cancelled') {
+             return res.status(400).json({ success: false, message: "Order must be accepted before its status can be updated."});
         }
-        const order = await Order.findById(orderId);
-        if (!order) {
-            return res.status(404).json({ success: false, message: "Order not found." });
+
+        if (!allowedTransitions[order.status]?.includes(status)) {
+            return res.status(400).json({ success: false, message: `Invalid status transition from '${order.status}' to '${status}'.` });
         }
-        if (order.restaurantId.toString() !== restaurantId.toString()) {
-            return res.status(403).json({ success: false, message: "You are not authorized to update this order." });
-        }
-        Object.assign(order, updates);
+        
+        order.status = status;
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: "Order updated successfully.", data: updatedOrder });
+
     } catch (error) {
         logger.error("Error updating order status", { error: error.message });
         next(error);
@@ -416,13 +422,19 @@ export const updateOrderStatus = async (req, res, next) => {
 };
 
 export const cancelOrder = async (req, res, next) => {
+    const session = await mongoose.startSession();
     try {
-        const orderId  = req.params?.orderId;
+        session.startTransaction();
+
+        const { orderId } = req.params;
         const userId = req.user?._id;
+
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
         }
-        const order = await Order.findById(orderId);
+
+        const order = await Order.findById(orderId).session(session);
+
         if (!order) {
             return res.status(404).json({ success: false, message: "Order not found." });
         }
@@ -432,15 +444,34 @@ export const cancelOrder = async (req, res, next) => {
         if (order.acceptanceStatus !== 'pending') {
             return res.status(400).json({ success: false, message: `This order cannot be cancelled as it has already been ${order.acceptanceStatus}.` });
         }
+
+        // --- Refund logic for cancelling a pre-paid order ---
+        if (order.paymentType === 'card' && order.paymentStatus === 'paid') {
+            try {
+                const checkoutSession = await stripe.checkout.sessions.retrieve(order.sessionId);
+                if (checkoutSession.payment_intent) {
+                    await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
+                    order.paymentStatus = 'refunded';
+                }
+            } catch (refundError) {
+                logger.error("Stripe refund failed on order cancellation", { orderId, error: refundError.message });
+                return res.status(500).json({ success: false, message: "Order cancellation failed because the refund could not be processed." });
+            }
+        }
+
         order.status = 'cancelled';
-        const cancelledOrder = await order.save();
+        const cancelledOrder = await order.save({ session });
+
+        await session.commitTransaction();
         return res.status(200).json({ success: true, message: "Order has been cancelled successfully.", data: cancelledOrder });
     } catch (error) {
+        await session.abortTransaction();
         logger.error("Error cancelling order", { error: error.message });
         next(error);
+    } finally {
+        session.endSession();
     }
 };
-
 export const getRestaurantStats = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
