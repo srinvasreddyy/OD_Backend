@@ -1,4 +1,3 @@
-// OD_Backend/src/models/Restaurant.js
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 
@@ -64,6 +63,10 @@ const restaurantSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  acceptsDining: { 
+    type: Boolean,
+    default: false
   },
   deliveryPartners: [{
     type: mongoose.Schema.Types.ObjectId,

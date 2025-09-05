@@ -1,4 +1,3 @@
-// OD_Backend/index.js
 import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
@@ -19,9 +18,11 @@ import cartRoutes from "./src/routes/cart.routes.js";
 import orderRoutes from "./src/routes/order.routes.js";
 import announcementRoutes from "./src/routes/announcements.routes.js";
 import adminRoutes from './src/routes/admin.routes.js';
-import ownerRoutes from './src/routes/owner.routes.js'; // <-- NEW
-import deliveryRoutes from './src/routes/delivery.routes.js'; // <-- NEW
+import ownerRoutes from './src/routes/owner.routes.js';
+import deliveryRoutes from './src/routes/delivery.routes.js';
 import paymentRoutes from "./src/routes/payment.routes.js";
+import tableRoutes from './src/routes/table.routes.js';
+import bookingRoutes from './src/routes/booking.routes.js'; 
 const app = express();
 
 // --- Core Middleware ---
@@ -65,6 +66,12 @@ app.use('/api/owner', generalApiLimiter, ownerRoutes);
 app.use('/api/delivery', generalApiLimiter, deliveryRoutes);
 app.use("/api/payment", paymentRoutes);
 
+// --- Feature Flagged Routes ---
+if (process.env.FEATURE_FLAG_TABLE_BOOKING === 'true') {
+    app.use('/api/tables', generalApiLimiter, tableRoutes);
+    app.use('/api/bookings', generalApiLimiter, bookingRoutes); // <-- NEW
+    logger.info('Feature enabled: Table Booking');
+}
 
 // --- Health Check Route ---
 app.get('/health', (req, res) => {

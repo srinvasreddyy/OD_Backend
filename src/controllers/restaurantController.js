@@ -9,7 +9,7 @@ import RestaurantDocuments from "../models/RestaurantDocuments.js";
  */
 export const getRestaurants = async (req, res) => {
     try {
-        const { page = 1, limit = 10, type, search } = req.query;
+        const { page = 1, limit = 10, type, search, acceptsDining } = req.query;
 
         // Find approved restaurant IDs first
         const approvedDocs = await RestaurantDocuments.find({ verificationStatus: 'approved' }).select('restaurantId').lean();
@@ -28,6 +28,12 @@ export const getRestaurants = async (req, res) => {
         if (search) {
             query.restaurantName = { $regex: search, $options: 'i' }; // Case-insensitive search
         }
+
+        // --- NEW FILTER ---
+        if (acceptsDining === 'true') {
+            query.acceptsDining = true;
+        }
+        // --- END NEW FILTER ---
 
         const restaurants = await Restaurant.find(query)
             .select('-password -currentOTP -otpGeneratedAt') // Exclude sensitive fields
@@ -58,7 +64,7 @@ export const getRestaurants = async (req, res) => {
  */
 export const getRestaurantById = async (req, res) => {
     try {
-        const { id } = req.params?.restaurantId;
+        const { id } = req.params; // Corrected from req.params?.restaurantId
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, message: "Invalid Restaurant ID." });
         }
@@ -93,7 +99,7 @@ export const getRestaurantById = async (req, res) => {
 export const updateRestaurantProfile = async (req, res) => {
     try {
         const  restaurantId  = req.restaurant?._id;
-        const { restaurantName, ownerFullName, phoneNumber, primaryContactName, address } = req.body;
+        const { restaurantName, ownerFullName, phoneNumber, primaryContactName, address, acceptsDining } = req.body;
 
         const updateData = {};
         if (restaurantName) updateData.restaurantName = restaurantName;
@@ -101,6 +107,7 @@ export const updateRestaurantProfile = async (req, res) => {
         if (phoneNumber) updateData.phoneNumber = phoneNumber;
         if (primaryContactName) updateData.primaryContactName = primaryContactName;
         if (address) updateData.address = address;
+        if (typeof acceptsDining === 'boolean') updateData.acceptsDining = acceptsDining; // Allow owner to toggle dining
 
         if (Object.keys(updateData).length === 0) {
             return res.status(400).json({ success: false, message: "No fields to update were provided." });
