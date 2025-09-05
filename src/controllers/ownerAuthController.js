@@ -1,3 +1,4 @@
+// OD_Backend/src/controllers/ownerAuthController.js
 import Restaurant from "../models/Restaurant.js";
 import { generateOTP, isOTPExpired } from "../utils/OtpUtils.js";
 import { generateJWT } from "../utils/JwtUtils.js";
@@ -22,7 +23,10 @@ export const requestOwnerOTP = async (req, res, next) => {
     );
 
     if (!owner) {
-      return res.status(404).json({ message: "Restaurant owner not found." });
+      // To prevent email enumeration, we still return a success-like response.
+      // The email will not be sent, but the client-side experience is the same.
+      logger.warn(`OTP request for non-existent owner email: ${email}`);
+      return res.status(200).json({ message: "If a matching account exists, an OTP has been sent to the owner's email." });
     }
 
     await sendOTPEmail(email, otp);
@@ -43,14 +47,11 @@ export const verifyOwnerOTP = async (req, res, next) => {
 
     const owner = await Restaurant.findOne({ email });
 
-    if (!owner) {
-        logger.error("Owner not found for OTP verification", { email });
-        return res.status(400).json({ message: "Invalid OTP." });
-    }
-
-    if (owner.currentOTP !== otp.trim()) {
-      logger.error("Invalid OTP for owner", { email, receivedOtp: otp, expectedOtp: owner.currentOTP });
-      return res.status(400).json({ message: "Invalid OTP." });
+    // UNIFIED FAILURE RESPONSE:
+    // If there's no owner OR the OTP is incorrect, return the same generic message.
+    if (!owner || owner.currentOTP !== otp.trim()) {
+      logger.warn("Invalid OTP or user for owner verification", { email });
+      return res.status(400).json({ message: "Invalid email or OTP." });
     }
 
     if (isOTPExpired(owner.otpGeneratedAt)) {

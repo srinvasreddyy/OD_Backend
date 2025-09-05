@@ -1,3 +1,4 @@
+// OD_Backend/index.js
 import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
@@ -23,6 +24,8 @@ import deliveryRoutes from './src/routes/delivery.routes.js';
 import paymentRoutes from "./src/routes/payment.routes.js";
 import tableRoutes from './src/routes/table.routes.js';
 import bookingRoutes from './src/routes/booking.routes.js'; 
+import userRoutes from './src/routes/user.routes.js';
+
 const app = express();
 
 // --- Core Middleware ---
@@ -64,30 +67,31 @@ app.use('/api/announcements', generalApiLimiter, announcementRoutes);
 app.use('/api/admin', generalApiLimiter, adminRoutes);
 app.use('/api/owner', generalApiLimiter, ownerRoutes);
 app.use('/api/delivery', generalApiLimiter, deliveryRoutes);
-app.use("/api/payment", paymentRoutes);
+app.use("/api/payment", generalApiLimiter, paymentRoutes);
+app.use('/api/tables', generalApiLimiter, tableRoutes);
+app.use('/api/bookings', generalApiLimiter, bookingRoutes);
+app.use('/api/users', generalApiLimiter, userRoutes);
 
-// --- Feature Flagged Routes ---
-if (process.env.FEATURE_FLAG_TABLE_BOOKING === 'true') {
-    app.use('/api/tables', generalApiLimiter, tableRoutes);
-    app.use('/api/bookings', generalApiLimiter, bookingRoutes); // <-- NEW
-    logger.info('Feature enabled: Table Booking');
-}
 
 // --- Health Check Route ---
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'OK', message: 'Server is healthy.' });
 });
 
-// --- Global Error Handling Middleware ---
+// --- Global Error Handling Middleware (REVISED) ---
 app.use((err, req, res, next) => {
-  logger.error(err.message, { stack: err.stack, path: req.path });
+  // The logger is already capturing the full error details, including the stack.
+  logger.error(err.message, { stack: err.stack, path: req.path, statusCode: err.statusCode });
+  
   const statusCode = err.statusCode || 500;
   const message = err.message || "An unexpected server error occurred.";
+  
+  // The response sent to the client should never contain the stack trace.
   const errorResponse = {
     success: false,
     message: message,
-    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
   };
+  
   res.status(statusCode).json(errorResponse);
 });
 

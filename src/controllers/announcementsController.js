@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Announcement from "../models/Announcements.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
 import { v2 as cloudinary } from "cloudinary";
+import { getPaginationParams } from "../utils/paginationUtils.js";
 
 // A custom error class for creating predictable, handled errors.
 class ApiError extends Error {
@@ -191,7 +192,7 @@ export const reactToAnnouncement = async (req, res) => {
  */
 export const getAnnouncements = async (req, res) => {
   const { restaurantId } = req.params;
-  const { page = 1, limit = 10 } = req.query;
+  const { page, limit, skip } = getPaginationParams(req.query);
 
   try {
     if (!mongoose.Types.ObjectId.isValid(restaurantId)) {
@@ -229,7 +230,7 @@ export const getAnnouncements = async (req, res) => {
  */
 export const getOwnerAnnouncements = async (req, res) => {
     const restaurantId = req.restaurant._id;
-    const { page = 1, limit = 10 } = req.query;
+    const { page, limit, skip } = getPaginationParams(req.query);
 
     try {
         const announcements = await Announcement.find({ restaurantId })
@@ -295,7 +296,7 @@ export const getSingleAnnouncement = async (req, res) => {
  * @access Public
  */
 export const getAllActiveAnnouncements = async (req, res) => {
-    const { page = 1, limit = 10 } = req.query;
+    const { page, limit, skip } = getPaginationParams(req.query);
 
     try {
         const announcements = await Announcement.find({ isActive: true })

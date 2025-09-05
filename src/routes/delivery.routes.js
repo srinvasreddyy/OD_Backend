@@ -1,6 +1,10 @@
 import express from 'express';
 import { validateDeliveryPartner } from '../middleware/validateDeliveryPartner.js';
-import { updateAvailabilityStatus, getAssignedOrders } from '../controllers/deliveryController.js';
+import { 
+    updateAvailabilityStatus, 
+    getAssignedOrders,
+    updateOrderStatusByPartner 
+} from '../controllers/deliveryController.js';
 
 const router = express.Router();
 
@@ -10,5 +14,7 @@ router.use(validateDeliveryPartner);
 // Routes
 router.patch('/status', updateAvailabilityStatus);
 router.get('/orders', getAssignedOrders);
+router.patch('/orders/:orderId/update-status', updateOrderStatusByPartner); // <-- NEW ROUTE
+
 
 export default router;

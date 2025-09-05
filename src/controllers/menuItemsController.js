@@ -1,3 +1,4 @@
+// OD_Backend/src/controllers/menuItemsController.js
 import mongoose from "mongoose";
 import { v2 as cloudinary } from "cloudinary";
 import MenuItem from "../models/MenuItem.js";
@@ -19,7 +20,6 @@ const findOrCreateCategories = async (categoryNames, session) => {
   const categoryPromises = categoryNames.map(name => {
     const trimmedName = name.trim();
     if (!trimmedName) return null;
-    // This operation needs to be part of the session
     return Category.findOneAndUpdate(
       { categoryName: trimmedName },
       { $setOnInsert: { categoryName: trimmedName } },
@@ -30,19 +30,26 @@ const findOrCreateCategories = async (categoryNames, session) => {
   return categories.filter(Boolean).map(cat => cat._id);
 };
 
+// --- CORRECTED ---
+// This function will now throw an error if any upload fails,
+// ensuring the entire transaction is aborted correctly.
 const handleImageUploads = async (files) => {
   const upload = async (fileList) => {
     if (!fileList?.length) return [];
-    const promises = fileList.map(file => uploadOnCloudinary(file).catch(() => null));
+    // Promise.all will now reject if any of the uploads fail.
+    const promises = fileList.map(file => uploadOnCloudinary(file));
     const results = await Promise.all(promises);
-    return results.filter(r => r?.secure_url).map(r => r.secure_url);
+    return results.map(r => r.secure_url); // All results are guaranteed to have secure_url
   };
+
   const [displayUrls, galleryUrls] = await Promise.all([
     upload(files?.displayImage),
     upload(files?.galleryImages)
   ]);
+
   return { displayImageUrl: displayUrls[0] || null, galleryImageUrls: galleryUrls };
 };
+
 
 const getPublicIdFromUrl = (url) => {
     if (!url) return null;
@@ -59,17 +66,16 @@ export const addMenuItem = async (req, res, next) => {
   const session = await mongoose.startSession();
 
   try {
-    // Step 1: Handle file uploads and data parsing BEFORE the transaction
     const { itemName, isFood, itemType, basePrice, gst, categoryNames, description, packageType, minimumQuantity, maximumQuantity, isBestseller, variantGroups: variantGroupsJSON, addonGroups: addonGroupsJSON } = req.body;
 
     if (!itemName || isFood === undefined || !itemType || !basePrice || !gst) {
       throw new ApiError(400, "Missing required fields: itemName, isFood, itemType, basePrice, gst.");
     }
 
+    // This will now throw an error if uploads fail, which will be caught below.
     const { displayImageUrl, galleryImageUrls } = await handleImageUploads(req.files);
     let newMenuItem;
 
-    // Step 2: Use the withTransaction helper for robust transaction management
     await session.withTransaction(async () => {
       const isFoodBool = isFood === 'true';
 
@@ -106,17 +112,14 @@ export const addMenuItem = async (req, res, next) => {
       });
 
       const savedItem = await menuItemData.save({ session });
-      newMenuItem = savedItem; // Store the saved item to send in the response
+      newMenuItem = savedItem; 
     });
 
-    // If the transaction is successful, send the response
     return res.status(201).json({ success: true, message: "Menu item created successfully!", data: newMenuItem });
 
   } catch (error) {
-    // The withTransaction helper handles aborting the transaction on error
     next(error); 
   } finally {
-    // End the session
     session.endSession();
   }
 };
@@ -143,8 +146,67 @@ export const updateMenuItem = async (req, res, next) => {
         throw new ApiError(403, "Forbidden: You do not have permission to update this menu item.");
       }
 
-      const updates = {}; const body = req.body;
-      const simpleFields = ['description', 'packageType', 'isBestseller', 'isAvailable']; simpleFields.forEach(field => { if (body[field] !== undefined) { updates[field] = (field === 'isBestseller' || field === 'isAvailable') ? body[field] === 'true' : body[field]; } }); let newBasePrice = menuItem.basePrice, newGst = menuItem.gst, priceChanged = false; if (body.basePrice !== undefined) { newBasePrice = parseFloat(body.basePrice); updates.basePrice = newBasePrice; priceChanged = true; } if (body.gst !== undefined) { newGst = parseFloat(body.gst); updates.gst = newGst; priceChanged = true; } if (priceChanged) updates.finalPrice = Math.round(newBasePrice * (1 + newGst / 100)); const parseJsonField = (jsonString, fieldName) => { if (!jsonString) return undefined; try { return JSON.parse(jsonString); } catch (e) { throw new ApiError(400, `Invalid JSON format for field: '${fieldName}'.`); } }; if (body.variantGroups) updates.variantGroups = parseJsonField(body.variantGroups, 'variantGroups'); if (body.addonGroups) updates.addonGroups = parseJsonField(body.addonGroups, 'addonGroups'); if (body.categoryNames) { const parsedCategoryNames = parseJsonField(body.categoryNames, 'categoryNames'); updates.categories = await findOrCreateCategories(parsedCategoryNames, session); } if (req.files) { if (req.files.displayImage) { const { displayImageUrl } = await handleImageUploads({ displayImage: req.files.displayImage }); if (displayImageUrl) updates.displayImageUrl = displayImageUrl; } if (req.files.galleryImages) { const { galleryImageUrls } = await handleImageUploads({ galleryImages: req.files.galleryImages }); if (galleryImageUrls.length > 0) updates.imageUrls = galleryImageUrls; } } if (Object.keys(updates).length === 0 && !req.files) throw new ApiError(400, "No fields to update were provided.");
+      const updates = {};
+      const body = req.body;
+
+      // --- REFORMATTED for readability ---
+      const simpleFields = ['description', 'packageType', 'isBestseller', 'isAvailable'];
+      simpleFields.forEach(field => {
+          if (body[field] !== undefined) {
+              const isBooleanField = ['isBestseller', 'isAvailable'].includes(field);
+              updates[field] = isBooleanField ? body[field] === 'true' : body[field];
+          }
+      });
+      
+      let newBasePrice = menuItem.basePrice;
+      let newGst = menuItem.gst;
+      let priceChanged = false;
+
+      if (body.basePrice !== undefined) {
+          newBasePrice = parseFloat(body.basePrice);
+          updates.basePrice = newBasePrice;
+          priceChanged = true;
+      }
+      if (body.gst !== undefined) {
+          newGst = parseFloat(body.gst);
+          updates.gst = newGst;
+          priceChanged = true;
+      }
+      if (priceChanged) {
+          updates.finalPrice = Math.round(newBasePrice * (1 + newGst / 100));
+      }
+
+      const parseJsonField = (jsonString, fieldName) => {
+          if (!jsonString) return undefined;
+          try {
+              return JSON.parse(jsonString);
+          } catch (e) {
+              throw new ApiError(400, `Invalid JSON format for field: '${fieldName}'.`);
+          }
+      };
+      
+      if (body.variantGroups) updates.variantGroups = parseJsonField(body.variantGroups, 'variantGroups');
+      if (body.addonGroups) updates.addonGroups = parseJsonField(body.addonGroups, 'addonGroups');
+      if (body.categoryNames) {
+          const parsedCategoryNames = parseJsonField(body.categoryNames, 'categoryNames');
+          updates.categories = await findOrCreateCategories(parsedCategoryNames, session);
+      }
+
+      if (req.files) {
+          if (req.files.displayImage) {
+              const { displayImageUrl } = await handleImageUploads({ displayImage: req.files.displayImage });
+              if (displayImageUrl) updates.displayImageUrl = displayImageUrl;
+          }
+          if (req.files.galleryImages) {
+              const { galleryImageUrls } = await handleImageUploads({ galleryImages: req.files.galleryImages });
+              if (galleryImageUrls.length > 0) updates.imageUrls = galleryImageUrls;
+          }
+      }
+      
+      if (Object.keys(updates).length === 0 && !req.files) {
+          throw new ApiError(400, "No fields to update were provided.");
+      }
+      // --- END REFORMAT ---
 
       Object.assign(menuItem, updates);
       updatedMenuItem = await menuItem.save({ session });
@@ -201,9 +263,7 @@ export const deleteMenuItem = async (req, res, next) => {
 
 export const getAllMenuItems = async (req, res, next) => {
     try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit;
+        const { page, limit, skip } = getPaginationParams(req.query);
 
         const menuItems = await MenuItem.find({ isAvailable: true })
             .populate('restaurantId', 'restaurantName address.city')
@@ -244,8 +304,9 @@ export const getMenuItemById = async (req, res, next) => {
 export const getMenuByRestaurantId = async (req, res, next) => {
     try {
         const { restaurantId } = req.params;
-        const { page = 1, limit = 20, isAvailable } = req.query;
-        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const { isAvailable } = req.query;
+        const { page, limit, skip } = getPaginationParams(req.query);
+        
 
         if (!mongoose.Types.ObjectId.isValid(restaurantId)) {
             return res.status(400).json({ success: false, message: "Invalid restaurant ID format." });

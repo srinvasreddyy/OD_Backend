@@ -5,20 +5,15 @@ import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import { DELIVERY_FEE } from "../../constants.js";
 import logger from "../utils/logger.js";
 import Stripe from "stripe";
-
+import { getPaginationParams } from "../utils/paginationUtils.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const validateCart = (cart) => {
     if (!cart || cart.length === 0) {
         return { error: "Cannot place an order with an empty cart." };
     }
-    const firstItemRestaurantId = cart[0].menuItemId.restaurantId.toString();
-    for (const item of cart) {
-        if (item.menuItemId.restaurantId.toString() !== firstItemRestaurantId) {
-            return { error: "All items in the order must be from the same restaurant." };
-        }
-    }
-    return { error: null, restaurantId: firstItemRestaurantId };
+    const restaurantId = cart[0].menuItemId.restaurantId.toString();
+    return { error: null, restaurantId };
 };
 const processCartItems = (cart) => {
     return cart.map(cartItem => {
@@ -194,8 +189,7 @@ export const placeOrder = async (req, res, next) => {
 export const getUserOrders = async (req, res, next) => {
     try {
         const  userId  = req.user?._id;
-        const { page = 1, limit = 10 } = req.query;
-        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const { page, limit, skip } = getPaginationParams(req.query);
         const orders = await Order.find({ customerId: userId }).populate('restaurantId', 'restaurantName address').sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit));
         const totalOrders = await Order.countDocuments({ customerId: userId });
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: parseInt(page) } });
@@ -208,8 +202,7 @@ export const getUserOrders = async (req, res, next) => {
 export const getRestaurantOrders = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
-        const { page = 1, limit = 10, status, acceptanceStatus } = req.query;
-        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const { page, limit, skip } = getPaginationParams(req.query);
 
         const query = { restaurantId };
         if (status) query.status = status;
@@ -228,8 +221,7 @@ export const getRestaurantOrders = async (req, res, next) => {
 export const getNewRestaurantOrders = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
-        const { page = 1, limit = 10 } = req.query;
-        const skip = (parseInt(page) - 1) * parseInt(limit);
+       const { page, limit, skip } = getPaginationParams(req.query);
         const query = { restaurantId, status: 'placed', acceptanceStatus: 'pending' };
         const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit));
         const totalOrders = await Order.countDocuments(query);

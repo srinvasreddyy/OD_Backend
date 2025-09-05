@@ -210,6 +210,9 @@ export const confirmBooking = async (req, res, next) => {
             }
 
             const { tableId, date, time, guests, restaurantId, customerId, bookingFee } = checkoutSession.metadata;
+            if (!mongoose.Types.ObjectId.isValid(tableId)) {
+                 throw new Error("Invalid Table ID found in session metadata.");
+            }
             const [hour, minute] = time.split(':');
             const bookingDate = new Date(date);
             bookingDate.setHours(hour, minute, 0, 0);
