@@ -47,12 +47,46 @@ const restaurantSchema = new mongoose.Schema({
       type: {
         type: String,
         enum: ['Point'],
+        required: true
       },
       coordinates: {
-        type: [Number],
+        type: [Number], // [longitude, latitude]
+        required: true
       }
     }
   },
+  handlingChargesPercentage: {
+    type: Number,
+    required: [true, 'Handling charges percentage is required.'],
+    min: 0,
+    default: 0
+  },
+  stripeSecretKey: {
+    type: String,
+    required: [true, 'Stripe secret key is required.'],
+    trim: true,
+    select: false // Prevent key from being sent in queries by default
+  },
+  deliverySettings: {
+    freeDeliveryRadius: { // In miles
+      type: Number,
+      required: [true, 'Free delivery radius is required.'],
+      min: 0,
+      default: 0
+    },
+    chargePerMile: { // Cost per mile after free radius
+      type: Number,
+      required: [true, 'Charge per mile is required.'],
+      min: 0,
+      default: 0
+    },
+    maxDeliveryRadius: { // In miles
+      type: Number,
+      required: [true, 'Maximum delivery radius is required.'],
+      min: 0
+    }
+  },
+  // --- END NEW FIELDS ---
   isEmailVerified: { type: Boolean, default: false },
   currentOTP: String,
   otpGeneratedAt: Date,

@@ -7,8 +7,6 @@ import Booking from "../models/Booking.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
 // --- Helper Functions ---
 
 const getDayOfWeek = (date) => {
@@ -38,11 +36,6 @@ const generateTimeSlots = (start, end, intervalMinutes = 60) => {
 
 // --- Controller Functions ---
 
-/**
- * @description Get available tables and slots for a given date and party size.
- * @route GET /api/restaurants/:restaurantId/availability
- * @access Public
- */
 export const getAvailableSlots = async (req, res, next) => {
     try {
         const { restaurantId } = req.params;
@@ -97,9 +90,9 @@ export const getAvailableSlots = async (req, res, next) => {
             bookingDate: { $gte: dateStart, $lt: dateEnd }
         }).select('tableId bookingDate').lean();
 
-        const bookedSlotsMap = new Map(); // "tableId-HH:MM" -> true
+        const bookedSlotsMap = new Map();
         existingBookings.forEach(b => {
-            const time = `${String(b.bookingDate.getHours()).padStart(2, '0')}:${String(b.bookingDate.getMinutes()).padStart(2, '0')}`;
+            const time = `${String(b.bookingDate.getUTCHours()).padStart(2, '0')}:${String(b.bookingDate.getUTCMinutes()).padStart(2, '0')}`;
             const key = `${b.tableId}-${time}`;
             bookedSlotsMap.set(key, true);
         });
@@ -126,11 +119,6 @@ export const getAvailableSlots = async (req, res, next) => {
     }
 };
 
-/**
- * @description Creates a Stripe Checkout session for table booking.
- * @route POST /api/bookings/create-checkout-session
- * @access Private (User)
- */
 export const createBookingCheckoutSession = async (req, res, next) => {
     try {
         const { tableId, date, time, guests } = req.body;
@@ -140,11 +128,18 @@ export const createBookingCheckoutSession = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "tableId, date, time, and guests are required." });
         }
 
-        const table = await Table.findById(tableId).populate('restaurantId', 'restaurantName');
-        if (!table) {
-            return res.status(404).json({ success: false, message: "Table not found." });
+        const table = await Table.findById(tableId)
+            .populate({
+                path: 'restaurantId',
+                select: 'restaurantName stripeSecretKey' // Select name and key
+            });
+
+        if (!table) return res.status(404).json({ success: false, message: "Table not found." });
+        if (!table.restaurantId.stripeSecretKey) {
+            return res.status(503).json({ success: false, message: "This restaurant is not currently accepting online bookings." });
         }
 
+        const stripe = new Stripe(table.restaurantId.stripeSecretKey);
         const bookingFee = 100;
 
         const session = await stripe.checkout.sessions.create({
@@ -183,11 +178,6 @@ export const createBookingCheckoutSession = async (req, res, next) => {
     }
 };
 
-/**
- * @description Confirms a booking after successful payment.
- * @route POST /api/bookings/confirm-booking
- * @access Private (User)
- */
 export const confirmBooking = async (req, res, next) => {
     const { sessionId } = req.body;
     if (!sessionId) {
@@ -198,10 +188,14 @@ export const confirmBooking = async (req, res, next) => {
     try {
         let newBooking;
         await dbSession.withTransaction(async () => {
+            const { tableId, date, time, restaurantId } = (await stripe.checkout.sessions.retrieve(sessionId)).metadata;
+            const restaurant = await Restaurant.findById(restaurantId).select('+stripeSecretKey').session(dbSession);
+            if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant payment configuration not found.");
+            
+            const stripe = new Stripe(restaurant.stripeSecretKey);
             const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
-            if (checkoutSession.payment_status !== 'paid') {
-                throw new Error("Payment not completed for this session.");
-            }
+
+            if (checkoutSession.payment_status !== 'paid') throw new Error("Payment not completed for this session.");
 
             const existingBooking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId }).session(dbSession);
             if (existingBooking) {
@@ -209,10 +203,7 @@ export const confirmBooking = async (req, res, next) => {
                 return;
             }
 
-            const { tableId, date, time, guests, restaurantId, customerId, bookingFee } = checkoutSession.metadata;
-            if (!mongoose.Types.ObjectId.isValid(tableId)) {
-                 throw new Error("Invalid Table ID found in session metadata.");
-            }
+            const { customerId, guests } = checkoutSession.metadata;
             const [hour, minute] = time.split(':');
             const bookingDate = new Date(date);
             bookingDate.setHours(hour, minute, 0, 0);
@@ -224,7 +215,7 @@ export const confirmBooking = async (req, res, next) => {
             }).session(dbSession);
 
             if (doubleBookingCheck) {
-                throw new Error("This time slot has just been booked by another user. Your payment will be refunded.");
+                throw new Error("This time slot has just been booked. Your payment will be refunded.");
             }
 
             const booking = new Booking({
@@ -260,15 +251,10 @@ export const confirmBooking = async (req, res, next) => {
     }
 };
 
-/**
- * @description Get bookings for the logged-in customer.
- * @route GET /api/bookings/my-bookings
- * @access Private (User)
- */
 export const getCustomerBookings = async (req, res, next) => {
     try {
         const customerId = req.user._id;
-        const { status } = req.query; // 'upcoming' or 'past'
+        const { status } = req.query;
         
         const query = { customerId };
         const now = new Date();
@@ -292,11 +278,6 @@ export const getCustomerBookings = async (req, res, next) => {
     }
 };
 
-/**
- * @description Get all bookings for the logged-in restaurant owner.
- * @route GET /api/bookings/restaurant
- * @access Private (Restaurant Owner)
- */
 export const getRestaurantBookings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant._id;
@@ -319,11 +300,22 @@ export const getRestaurantBookings = async (req, res, next) => {
     }
 };
 
-/**
- * @description Allows a customer to cancel their booking.
- * @route PATCH /api/bookings/:bookingId/cancel
- * @access Private (User)
- */
+const cancelAndRefundBooking = async (booking, dbSession, statusToSet) => {
+    const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeSecretKey').session(dbSession);
+    if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant payment configuration not found.");
+    
+    if (booking.paymentDetails.paymentStatus === 'paid') {
+        const stripe = new Stripe(restaurant.stripeSecretKey);
+        const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId);
+        if (checkoutSession.payment_intent) {
+            await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
+            booking.paymentDetails.paymentStatus = 'refunded';
+        }
+    }
+    booking.status = statusToSet;
+    return await booking.save({ session: dbSession });
+};
+
 export const cancelBookingByUser = async (req, res, next) => {
     const { bookingId } = req.params;
     const customerId = req.user._id;
@@ -334,47 +326,27 @@ export const cancelBookingByUser = async (req, res, next) => {
         await dbSession.withTransaction(async () => {
             const booking = await Booking.findOne({ _id: bookingId, customerId }).session(dbSession);
 
-            if (!booking) {
-                throw { statusCode: 404, message: "Booking not found or you do not have permission to cancel it." };
-            }
-            if (booking.status !== 'confirmed') {
-                throw { statusCode: 400, message: `This booking cannot be cancelled as its status is '${booking.status}'.` };
-            }
+            if (!booking) throw { statusCode: 404, message: "Booking not found or you do not have permission to cancel it." };
+            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `This booking cannot be cancelled as its status is '${booking.status}'.` };
 
             const now = new Date();
             const bookingTime = new Date(booking.bookingDate);
             const hoursDifference = (bookingTime - now) / (1000 * 60 * 60);
 
-            if (hoursDifference < 5) {
-                throw { statusCode: 403, message: "Booking cannot be cancelled within 5 hours of the scheduled time." };
-            }
-
-            if (booking.paymentDetails.paymentStatus === 'paid') {
-                const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId);
-                if (checkoutSession.payment_intent) {
-                    await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
-                    booking.paymentDetails.paymentStatus = 'refunded';
-                }
-            }
-
-            booking.status = 'cancelled_by_user';
-            updatedBooking = await booking.save({ session: dbSession });
+            if (hoursDifference < 5) throw { statusCode: 403, message: "Booking cannot be cancelled within 5 hours of the scheduled time." };
+            
+            updatedBooking = await cancelAndRefundBooking(booking, dbSession, 'cancelled_by_user');
         });
         
         return res.status(200).json({ success: true, message: "Booking cancelled and refunded successfully.", data: updatedBooking });
     } catch (error) {
         logger.error("Error cancelling booking by user", { error: error.message, bookingId });
-        next(error);
+        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected server error occurred." });
     } finally {
         dbSession.endSession();
     }
 };
 
-/**
- * @description Allows a restaurant owner to cancel a booking.
- * @route PATCH /api/bookings/restaurant/:bookingId/cancel
- * @access Private (Restaurant Owner)
- */
 export const cancelBookingByOwner = async (req, res, next) => {
     const { bookingId } = req.params;
     const restaurantId = req.restaurant._id;
@@ -385,31 +357,16 @@ export const cancelBookingByOwner = async (req, res, next) => {
         await dbSession.withTransaction(async () => {
             const booking = await Booking.findOne({ _id: bookingId, restaurantId }).session(dbSession);
 
-            if (!booking) {
-                throw { statusCode: 404, message: "Booking not found or it does not belong to your restaurant." };
-            }
-            if (booking.status !== 'confirmed') {
-                throw { statusCode: 400, message: `This booking cannot be cancelled as its status is '${booking.status}'.` };
-            }
+            if (!booking) throw { statusCode: 404, message: "Booking not found or it does not belong to your restaurant." };
+            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `This booking cannot be cancelled as its status is '${booking.status}'.` };
 
-            if (booking.paymentDetails.paymentStatus === 'paid') {
-                 const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId);
-                if (checkoutSession.payment_intent) {
-                    await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
-                    booking.paymentDetails.paymentStatus = 'refunded';
-                }
-            }
-
-            booking.status = 'cancelled_by_owner';
-            updatedBooking = await booking.save({ session: dbSession });
+            updatedBooking = await cancelAndRefundBooking(booking, dbSession, 'cancelled_by_owner');
         });
-
-        // TODO: In a real system, we would also trigger a notification email to the customer here.
         
-        return res.status(200).json({ success: true, message: "Booking cancelled and refunded successfully. The customer will be notified.", data: updatedBooking });
+        return res.status(200).json({ success: true, message: "Booking cancelled and refunded successfully.", data: updatedBooking });
     } catch (error) {
         logger.error("Error cancelling booking by owner", { error: error.message, bookingId });
-        next(error);
+        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected server error occurred." });
     } finally {
         dbSession.endSession();
     }

@@ -3,9 +3,10 @@ import {
     getRestaurants, 
     getRestaurantById,
     updateRestaurantProfile,
+    updateRestaurantSettings, // <-- NEW IMPORT
     toggleRestaurantStatus
 } from '../controllers/restaurantController.js';
-import { getAvailableSlots } from '../controllers/bookingController.js'; // <-- NEW IMPORT
+import { getAvailableSlots } from '../controllers/bookingController.js';
 import { validateRestaurant } from '../middleware/validateRestaurant.js';
 
 const router = express.Router();
@@ -13,12 +14,11 @@ const router = express.Router();
 // --- Public Routes ---
 router.get('/', getRestaurants);
 router.get('/:id', getRestaurantById);
-
-// New public route for checking table availability
-router.get('/:restaurantId/availability', getAvailableSlots); // <-- NEW ROUTE
+router.get('/:restaurantId/availability', getAvailableSlots);
 
 // --- Private Restaurant Owner Routes ---
-router.put('/update-profile', validateRestaurant, updateRestaurantProfile);
+router.put('/profile', validateRestaurant, updateRestaurantProfile);
+router.put('/settings', validateRestaurant, updateRestaurantSettings); // <-- NEW ROUTE
 router.patch('/toggle-status', validateRestaurant, toggleRestaurantStatus);
 
 

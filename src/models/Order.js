@@ -15,7 +15,7 @@ const orderSchema = new mongoose.Schema({
     landmark: String,
     coordinates: {
       type: { type: String, enum: ['Point'] },
-      coordinates: { type: [Number] }
+      coordinates: { type: [Number] } // [longitude, latitude]
     }
   },
   orderedItems: [{
@@ -31,7 +31,7 @@ const orderSchema = new mongoose.Schema({
   pricing: {
     subtotal: Number,
     deliveryFee: Number,
-    tax: Number,
+    handlingCharge: Number,
     totalAmount: Number
   },
   paymentType: { type: String, enum: ['cash', 'card', 'upi'], required: true },

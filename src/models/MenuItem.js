@@ -14,8 +14,6 @@ const menuItemSchema = new mongoose.Schema({
   isFood: { type: Boolean, required: true },
   itemType: { type: String, enum: ['veg', 'non-veg', 'egg'], required: true },
   basePrice: { type: Number, required: true, min: 0 },
-  gst: { type: Number, required: true, min: 0 },
-  finalPrice: { type: Number, required: true, min: 0 },
   packageType: String,
   minimumQuantity: { type: Number, default: 1, min: 1 },
   maximumQuantity: { type: Number, min: 1 },

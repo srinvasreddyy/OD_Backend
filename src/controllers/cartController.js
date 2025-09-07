@@ -1,16 +1,11 @@
 import mongoose from "mongoose";
 import User from '../models/User.js';
 import MenuItem from '../models/MenuItem.js';
+import Restaurant from "../models/Restaurant.js";
 import logger from "../utils/logger.js";
-import { DELIVERY_FEE } from "../../constants.js";
 
 // --- Helper Functions ---
 
-/**
- * Generates a consistent, unique key for a given menu item configuration.
- * @param {object} itemConfig - Object containing menuItemId, selectedVariant, and selectedAddons.
- * @returns {string} A unique string key.
- */
 const generateCartItemKey = ({ menuItemId, selectedVariant, selectedAddons }) => {
     const variantPart = selectedVariant?.variantId || 'novariant';
     const addonsPart = (selectedAddons || [])
@@ -73,8 +68,7 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
     };
 };
 
-const processCartItemsForSummary = (cart) => {
-    // This function remains the same
+const processCartItemsForSummary = (cart, restaurant) => {
     return cart.map(cartItem => {
         const { menuItemId: menuItem, quantity, selectedVariant, selectedAddons } = cartItem;
         let lineItemSubtotal = menuItem.basePrice;
@@ -91,23 +85,23 @@ const processCartItemsForSummary = (cart) => {
             });
         }
         const itemTotal = lineItemSubtotal * quantity;
-        const itemTax = itemTotal * (menuItem.gst / 100);
-        return { itemTotal, itemTax };
+        const itemHandlingCharge = itemTotal * (restaurant.handlingChargesPercentage / 100);
+        return { itemTotal, itemHandlingCharge };
     });
 };
 
 const calculatePricingSummary = (processedItems) => {
-    // This function remains the same
     if (processedItems.length === 0) {
-        return { subtotal: 0, tax: 0, deliveryFee: 0, totalAmount: 0, itemCount: 0 };
+        return { subtotal: 0, handlingCharge: 0, totalAmount: 0, itemCount: 0 };
     }
     const subtotal = processedItems.reduce((acc, item) => acc + item.itemTotal, 0);
-    const tax = processedItems.reduce((acc, item) => acc + item.itemTax, 0);
-    const totalAmount = subtotal + tax + DELIVERY_FEE;
+    const handlingCharge = processedItems.reduce((acc, item) => acc + item.itemHandlingCharge, 0);
+    
+    // Delivery fee is not included here as it requires an address
+    const totalAmount = subtotal + handlingCharge;
     return {
         subtotal: Math.round(subtotal * 100) / 100,
-        tax: Math.round(tax * 100) / 100,
-        deliveryFee: DELIVERY_FEE,
+        handlingCharge: Math.round(handlingCharge * 100) / 100,
         totalAmount: Math.round(totalAmount * 100) / 100,
     };
 };
@@ -121,7 +115,10 @@ export const addItemToCart = async (req, res, next) => {
 
         const { menuItem, cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariant, selectedAddons);
 
-        const user = await User.findById(userId).populate(`${cartField}.menuItemId`, 'restaurantId');
+        const user = await User.findById(userId).populate({
+            path: `${cartField}.menuItemId`,
+            select: 'restaurantId'
+        });
         if (!user) {
             return res.status(404).json({ message: "User not found." });
         }
@@ -156,7 +153,6 @@ export const addItemToCart = async (req, res, next) => {
 };
 
 export const getCart = async (req, res, next) => {
-    // This function remains largely the same but returns the cartItemKey now.
     try {
         const userId = req.user?._id;
         const user = await User.findById(userId)
@@ -205,7 +201,6 @@ export const getCart = async (req, res, next) => {
 };
 
 export const getCartSummary = async (req, res, next) => {
-    // This function remains the same
     try {
         const userId = req.user?._id;
         const { cartType } = req.query;
@@ -213,15 +208,31 @@ export const getCartSummary = async (req, res, next) => {
             return res.status(400).json({ message: "A valid cartType ('food' or 'groceries') is required." });
         }
         const cartField = cartType === 'food' ? 'foodCart' : 'groceriesCart';
+        
         const user = await User.findById(userId).populate(`${cartField}.menuItemId`).lean();
-        if (!user) {
-            return res.status(404).json({ message: "User not found." });
-        }
+        if (!user) return res.status(404).json({ message: "User not found." });
+
         const cart = user[cartField];
-        const processedItems = processCartItemsForSummary(cart);
+        if (cart.length === 0) {
+            return res.status(200).json({ success: true, data: { itemCount: 0, subtotal: 0, handlingCharge: 0, deliveryFee: null, totalAmount: 0 } });
+        }
+        
+        const restaurantId = cart[0].menuItemId.restaurantId;
+        const restaurant = await Restaurant.findById(restaurantId).lean();
+        if(!restaurant) return res.status(404).json({ message: "Restaurant for items in cart not found." });
+
+        const processedItems = processCartItemsForSummary(cart, restaurant);
         const pricingSummary = calculatePricingSummary(processedItems);
         const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
-        return res.status(200).json({ success: true, data: { itemCount: totalItems, ...pricingSummary } });
+
+        return res.status(200).json({ 
+            success: true, 
+            data: { 
+                itemCount: totalItems, 
+                ...pricingSummary,
+                deliveryFee: null, // Delivery fee requires address, cannot be calculated here
+            } 
+        });
     } catch (error) {
         logger.error("Error getting cart summary", { error: error.message });
         next(error);
@@ -231,7 +242,6 @@ export const getCartSummary = async (req, res, next) => {
 export const updateItemQuantity = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        // **API CHANGE**: Now uses cartItemKey
         const { cartType, cartItemKey, quantity } = req.body;
 
         if (!['foodCart', 'groceriesCart'].includes(cartType)) {
@@ -242,10 +252,10 @@ export const updateItemQuantity = async (req, res, next) => {
         }
 
         if (quantity === 0) {
+            // Forward to removeItemFromCart logic
             return removeItemFromCart(req, res, next);
         }
 
-        // We need to fetch the user to validate min/max quantity against the specific item
         const user = await User.findById(userId).populate(`${cartType}.menuItemId`);
         const cart = user[cartType];
         const itemToUpdate = cart.find(item => item.cartItemKey === cartItemKey);
@@ -275,7 +285,6 @@ export const updateItemQuantity = async (req, res, next) => {
 export const removeItemFromCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        // **API CHANGE**: Now uses cartItemKey
         const { cartType, cartItemKey } = req.body;
 
         if (!['foodCart', 'groceriesCart'].includes(cartType)) {

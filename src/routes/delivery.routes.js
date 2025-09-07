@@ -3,7 +3,8 @@ import { validateDeliveryPartner } from '../middleware/validateDeliveryPartner.j
 import { 
     updateAvailabilityStatus, 
     getAssignedOrders,
-    updateOrderStatusByPartner 
+    updateOrderStatusByPartner,
+    updateLocation // <-- NEW IMPORT
 } from '../controllers/deliveryController.js';
 
 const router = express.Router();
@@ -13,8 +14,9 @@ router.use(validateDeliveryPartner);
 
 // Routes
 router.patch('/status', updateAvailabilityStatus);
+router.patch('/location', updateLocation); 
 router.get('/orders', getAssignedOrders);
-router.patch('/orders/:orderId/update-status', updateOrderStatusByPartner); // <-- NEW ROUTE
+router.patch('/orders/:orderId/update-status', updateOrderStatusByPartner);
 
 
 export default router;

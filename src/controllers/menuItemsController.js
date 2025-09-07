@@ -30,16 +30,12 @@ const findOrCreateCategories = async (categoryNames, session) => {
   return categories.filter(Boolean).map(cat => cat._id);
 };
 
-// --- CORRECTED ---
-// This function will now throw an error if any upload fails,
-// ensuring the entire transaction is aborted correctly.
 const handleImageUploads = async (files) => {
   const upload = async (fileList) => {
     if (!fileList?.length) return [];
-    // Promise.all will now reject if any of the uploads fail.
     const promises = fileList.map(file => uploadOnCloudinary(file));
     const results = await Promise.all(promises);
-    return results.map(r => r.secure_url); // All results are guaranteed to have secure_url
+    return results.map(r => r.secure_url);
   };
 
   const [displayUrls, galleryUrls] = await Promise.all([
@@ -66,13 +62,12 @@ export const addMenuItem = async (req, res, next) => {
   const session = await mongoose.startSession();
 
   try {
-    const { itemName, isFood, itemType, basePrice, gst, categoryNames, description, packageType, minimumQuantity, maximumQuantity, isBestseller, variantGroups: variantGroupsJSON, addonGroups: addonGroupsJSON } = req.body;
+    const { itemName, isFood, itemType, basePrice, categoryNames, description, packageType, minimumQuantity, maximumQuantity, isBestseller, variantGroups: variantGroupsJSON, addonGroups: addonGroupsJSON } = req.body;
 
-    if (!itemName || isFood === undefined || !itemType || !basePrice || !gst) {
-      throw new ApiError(400, "Missing required fields: itemName, isFood, itemType, basePrice, gst.");
+    if (!itemName || isFood === undefined || !itemType || !basePrice) {
+      throw new ApiError(400, "Missing required fields: itemName, isFood, itemType, basePrice.");
     }
 
-    // This will now throw an error if uploads fail, which will be caught below.
     const { displayImageUrl, galleryImageUrls } = await handleImageUploads(req.files);
     let newMenuItem;
 
@@ -98,15 +93,13 @@ export const addMenuItem = async (req, res, next) => {
       const categoryObjectIds = await findOrCreateCategories(parsedCategoryNames, session);
 
       const parsedBasePrice = parseFloat(basePrice);
-      const parsedGst = parseFloat(gst);
-      const finalPrice = Math.round(parsedBasePrice * (1 + parsedGst / 100));
       const parseJsonField = (jsonString, fieldName) => { if (!jsonString) return undefined; try { return JSON.parse(jsonString); } catch (e) { throw new ApiError(400, `Invalid JSON format for field: '${fieldName}'.`); } };
       const variantGroups = parseJsonField(variantGroupsJSON, 'variantGroups');
       const addonGroups = parseJsonField(addonGroupsJSON, 'addonGroups');
 
       const menuItemData = new MenuItem({
         restaurantId, itemName, description, isFood: isFoodBool,
-        itemType, basePrice: parsedBasePrice, gst: parsedGst, finalPrice, packageType,
+        itemType, basePrice: parsedBasePrice, packageType,
         minimumQuantity, maximumQuantity, variantGroups, addonGroups, isBestseller,
         displayImageUrl, imageUrls: galleryImageUrls, categories: categoryObjectIds,
       });
@@ -149,7 +142,6 @@ export const updateMenuItem = async (req, res, next) => {
       const updates = {};
       const body = req.body;
 
-      // --- REFORMATTED for readability ---
       const simpleFields = ['description', 'packageType', 'isBestseller', 'isAvailable'];
       simpleFields.forEach(field => {
           if (body[field] !== undefined) {
@@ -158,24 +150,10 @@ export const updateMenuItem = async (req, res, next) => {
           }
       });
       
-      let newBasePrice = menuItem.basePrice;
-      let newGst = menuItem.gst;
-      let priceChanged = false;
-
       if (body.basePrice !== undefined) {
-          newBasePrice = parseFloat(body.basePrice);
-          updates.basePrice = newBasePrice;
-          priceChanged = true;
+          updates.basePrice = parseFloat(body.basePrice);
       }
-      if (body.gst !== undefined) {
-          newGst = parseFloat(body.gst);
-          updates.gst = newGst;
-          priceChanged = true;
-      }
-      if (priceChanged) {
-          updates.finalPrice = Math.round(newBasePrice * (1 + newGst / 100));
-      }
-
+      
       const parseJsonField = (jsonString, fieldName) => {
           if (!jsonString) return undefined;
           try {
@@ -206,7 +184,6 @@ export const updateMenuItem = async (req, res, next) => {
       if (Object.keys(updates).length === 0 && !req.files) {
           throw new ApiError(400, "No fields to update were provided.");
       }
-      // --- END REFORMAT ---
 
       Object.assign(menuItem, updates);
       updatedMenuItem = await menuItem.save({ session });
@@ -259,7 +236,6 @@ export const deleteMenuItem = async (req, res, next) => {
     }
 };
 
-// --- Read (GET) Controllers ---
 
 export const getAllMenuItems = async (req, res, next) => {
     try {
