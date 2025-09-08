@@ -1,6 +1,4 @@
 // OD_Backend/index.js
-import dotenv from "dotenv";
-dotenv.config();
 import express from "express";
 import cors from 'cors';
 import cookieParser from "cookie-parser";
@@ -9,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import DBconnection from "./src/config/db.js";
 import './src/config/passport-setup.js';
 import logger from "./src/utils/logger.js";
+import config from "./src/config/env.js"; 
 
 // Route Imports
 import authRoutes from './src/routes/authRoutes.js';
@@ -25,6 +24,7 @@ import paymentRoutes from "./src/routes/payment.routes.js";
 import tableRoutes from './src/routes/table.routes.js';
 import bookingRoutes from './src/routes/booking.routes.js'; 
 import userRoutes from './src/routes/user.routes.js';
+import promoRoutes from './src/routes/promo.routes.js';
 
 const app = express();
 
@@ -34,7 +34,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173', 
+  origin: config.corsOrigin, 
   credentials: true 
 }));
 app.use(passport.initialize());
@@ -71,6 +71,9 @@ app.use("/api/payment", generalApiLimiter, paymentRoutes);
 app.use('/api/tables', generalApiLimiter, tableRoutes);
 app.use('/api/bookings', generalApiLimiter, bookingRoutes);
 app.use('/api/users', generalApiLimiter, userRoutes);
+if (config.featureFlags.enableOffers) { 
+    app.use('/api/promo', generalApiLimiter, promoRoutes);
+}
 
 
 // --- Health Check Route ---
@@ -96,11 +99,14 @@ app.use((err, req, res, next) => {
 });
 
 // --- Server Initialization ---
-const PORT = process.env.PORT || 3000;
+const PORT = config.port;
 DBconnection()
 .then(() => {
   app.listen(PORT, () => {
     logger.info(`Server is running on port ${PORT}`);
+    if (config.featureFlags.enableOffers) {
+        logger.info('Feature Flag "ENABLE_OFFERS" is ON.');
+    }
   });
 })
 .catch((error) => {

@@ -3,6 +3,7 @@ import Announcement from "../models/Announcements.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
 import { v2 as cloudinary } from "cloudinary";
 import { getPaginationParams } from "../utils/paginationUtils.js";
+import featureFlags from "../config/featureFlags.js";
 
 // A custom error class for creating predictable, handled errors.
 class ApiError extends Error {
@@ -27,32 +28,56 @@ const getPublicIdFromUrl = (url) => {
  */
 export const createAnnouncement = async (req, res) => {
   const restaurantId = req.restaurant._id;
-  const { title, content, announcementType } = req.body;
+  const { title, content, announcementType, offerDetails: offerDetailsJSON } = req.body;
 
   try {
     if (!title || !content || !announcementType) {
       throw new ApiError(400, "Title, content, and announcement type are required.");
     }
-    if (!['text', 'image'].includes(announcementType)) {
-      throw new ApiError(400, "Invalid announcement type. Must be 'text' or 'image'.");
+    if (!['text', 'image', 'offer'].includes(announcementType)) {
+      throw new ApiError(400, "Invalid announcement type. Must be 'text', 'image', or 'offer'.");
     }
 
-    let imageUrl = null;
+    const newAnnouncementData = {
+      restaurantId,
+      title,
+      content,
+      announcementType,
+      imageUrl: null,
+      offerDetails: null
+    };
+
     if (announcementType === "image") {
       if (!req.file) {
         throw new ApiError(400, "An image file is required for an image announcement.");
       }
       const result = await uploadOnCloudinary(req.file);
-      imageUrl = result.secure_url;
+      newAnnouncementData.imageUrl = result.secure_url;
     }
 
-    const newAnnouncement = new Announcement({
-      restaurantId,
-      title,
-      content,
-      announcementType,
-      imageUrl,
-    });
+    if (announcementType === "offer") {
+        if (!featureFlags.ENABLE_OFFERS) {
+            throw new ApiError(403, "The offers feature is currently disabled.");
+        }
+        if (!offerDetailsJSON) {
+            throw new ApiError(400, "offerDetails are required for an offer announcement.");
+        }
+
+        const offerDetails = JSON.parse(offerDetailsJSON);
+        const { promoCode, discountType, discountValue, minOrderValue, validUntil } = offerDetails;
+        if (!promoCode || !discountType || !discountValue || !validUntil) {
+            throw new ApiError(400, "promoCode, discountType, discountValue, and validUntil are required for an offer.");
+        }
+        
+        const existingPromo = await Announcement.findOne({ 'offerDetails.promoCode': promoCode.toUpperCase() });
+        if(existingPromo) {
+            throw new ApiError(409, "This promo code is already in use.");
+        }
+
+        newAnnouncementData.offerDetails = offerDetails;
+    }
+
+    const newAnnouncement = new Announcement(newAnnouncementData);
 
     await newAnnouncement.save();
     return res.status(201).json({
@@ -94,6 +119,7 @@ export const editAnnouncement = async (req, res) => {
     if (announcement.restaurantId.toString() !== restaurantId.toString()) {
       throw new ApiError(403, "Forbidden: You do not have permission to edit this announcement.");
     }
+    
 
     if (title) announcement.title = title;
     if (content) announcement.content = content;

@@ -1,4 +1,13 @@
 import mongoose from "mongoose";
+
+// --- NEW: Sub-schema for Applied Offer Details ---
+const appliedOfferSchema = new mongoose.Schema({
+  promoCode: { type: String, required: true },
+  discountType: { type: String, enum: ['PERCENTAGE', 'FLAT', 'FREE_DELIVERY'], required: true },
+  discountAmount: { type: Number, required: true, min: 0 }
+}, { _id: false });
+
+
 const orderSchema = new mongoose.Schema({
   orderNumber: { type: String, unique: true, required: true },
   billNumber: String,
@@ -32,7 +41,12 @@ const orderSchema = new mongoose.Schema({
     subtotal: Number,
     deliveryFee: Number,
     handlingCharge: Number,
+    discountAmount: { type: Number, default: 0 }, // <-- NEW
     totalAmount: Number
+  },
+  appliedOffer: { // <-- NEW
+    type: appliedOfferSchema,
+    default: null
   },
   paymentType: { type: String, enum: ['cash', 'card', 'upi'], required: true },
   paymentStatus: {

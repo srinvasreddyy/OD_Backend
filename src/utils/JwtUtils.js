@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import config from '../config/env.js';
 
 // The second argument `isOwner` determines the payload structure
 export function generateJWT(entity, isOwner = false) {
@@ -20,15 +21,14 @@ export function generateJWT(entity, isOwner = false) {
   
   return jwt.sign(
     payload,
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRY || '2h' } // Use env variable with a default
+    config.jwt.secret,
+    { expiresIn: config.jwt.expiry }
   );
 }
 
 export function verifyJWT(token) {
-  if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET not set');
   try {
-    return jwt.verify(token, process.env.JWT_SECRET);
+    return jwt.verify(token, config.jwt.secret);
   } catch (error) {
     return null;
   }

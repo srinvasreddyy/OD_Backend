@@ -4,7 +4,53 @@ import { generateJWT } from "../utils/JwtUtils.js";
 import { sendOTPEmail } from "../utils/MailUtils.js";
 import logger from "../utils/logger.js";
 
-// Request OTP
+/**
+ * @description Registers a new user of type 'customer'.
+ * @route POST /api/auth/register
+ * @access Public
+ */
+export const registerUser = async (req, res, next) => {
+  try {
+    const { fullName, email, customerProfile } = req.body;
+
+    if (!fullName || !email) {
+      return res.status(400).json({ success: false, message: "Full name and email are required." });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ success: false, message: "A user with this email already exists. Please log in." });
+    }
+
+    const newUser = new User({
+      fullName,
+      email,
+      userType: 'customer', // Public registration is ONLY for customers
+      customerProfile: customerProfile || {},
+      isEmailVerified: false // Verification happens on first OTP login
+    });
+
+    await newUser.save();
+
+    res.status(201).json({ 
+        success: true, 
+        message: "Registration successful. Please log in using the OTP sent to your email to verify your account." 
+    });
+
+  } catch (error) {
+    if (error.code === 11000) {
+        return res.status(409).json({ success: false, message: "An account with this email already exists." });
+    }
+    logger.error("User registration failed", { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * @description Sends an OTP to a registered user's email for login.
+ * @route POST /api/auth/request-otp
+ * @access Public
+ */
 export const requestOTP = async (req, res, next) => {
   try {
     const { email } = req.body;
@@ -12,26 +58,31 @@ export const requestOTP = async (req, res, next) => {
       return res.status(400).json({ message: "Email is required." });
     }
 
+    // --- LOGIC CHANGE ---
+    // Do not create a user here. Only find an existing one.
+    const user = await User.findOne({ email });
+    if (!user) {
+        return res.status(404).json({ success: false, message: "No account found with this email. Please register first." });
+    }
+    // --- END LOGIC CHANGE ---
+
     const otp = generateOTP();
-    await User.findOneAndUpdate(
-      { email },
-      {
-        email,
-        currentOTP: otp,
-        otpGeneratedAt: new Date(),
-        isEmailVerified: false,
-      },
-      { upsert: true, new: true }
-    );
+    user.currentOTP = otp;
+    user.otpGeneratedAt = new Date();
+    await user.save();
 
     await sendOTPEmail(email, otp);
-    res.status(200).json({ message: "OTP sent to your email." });
+    res.status(200).json({ message: "OTP sent to your email for login." });
   } catch (error) {
     next(error);
   }
 };
 
-// Verify OTP
+/**
+ * @description Verifies a login OTP and creates a session for the user.
+ * @route POST /api/auth/verify-otp
+ * @access Public
+ */
 export const verifyOTP = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
@@ -48,11 +99,7 @@ export const verifyOTP = async (req, res, next) => {
     }
 
     if (user.currentOTP !== otp.trim()) {
-      logger.error("Invalid OTP for user", {
-        email,
-        receivedOtp: otp,
-        expectedOtp: user.currentOTP,
-      });
+      logger.warn("Invalid OTP for user", { email });
       return res.status(400).json({ message: "The OTP is incorrect." });
     }
 
@@ -60,64 +107,13 @@ export const verifyOTP = async (req, res, next) => {
       return res.status(400).json({ message: "The OTP has expired." });
     }
 
-    user.isEmailVerified = true;
+    // First successful OTP login also verifies the email
+    if (!user.isEmailVerified) {
+        user.isEmailVerified = true;
+    }
     user.currentOTP = null;
     await user.save();
-
-    const isRegistered = !!user.userType;
-
-    if (isRegistered) {
-      const token = generateJWT(user);
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "Strict",
-        maxAge: 2 * 60 * 60 * 1000,
-      });
-      return res.status(200).json({
-        message: "OTP verified successfully. You are now logged in.",
-        userId: user._id,
-        isRegistered,
-      });
-    } else {
-      return res.status(200).json({
-        message: "OTP verified. Please complete your registration.",
-        userId: user._id,
-        isRegistered,
-      });
-    }
-  } catch (error) {
-    logger.error("OTP verification failed", { error: error.message });
-    next(error);
-  }
-};
-
-// Register User
-export const registerUser = async (req, res, next) => {
-  try {
-    const {
-      userId,
-      fullName,
-      userType,
-      customerProfile,
-      deliveryPartnerProfile,
-    } = req.body;
-
-    const user = await User.findById(userId);
-    if (!user || !user.isEmailVerified) {
-      return res
-        .status(400)
-        .json({ message: "OTP verification is required before registration." });
-    }
-
-    user.fullName = fullName;
-    user.userType = userType;
-    if (userType === "customer") user.customerProfile = customerProfile;
-    if (userType === "delivery_partner")
-      user.deliveryPartnerProfile = deliveryPartnerProfile;
-
-    await user.save();
-
+    
     const token = generateJWT(user);
     res.cookie("token", token, {
       httpOnly: true,
@@ -125,9 +121,19 @@ export const registerUser = async (req, res, next) => {
       sameSite: "Strict",
       maxAge: 2 * 60 * 60 * 1000,
     });
+    
+    return res.status(200).json({
+      success: true,
+      message: "Login successful.",
+      data: {
+          fullName: user.fullName,
+          email: user.email,
+          userType: user.userType
+      }
+    });
 
-    res.status(201).json({ message: "Registration successful.", user });
   } catch (error) {
+    logger.error("OTP verification failed", { error: error.message });
     next(error);
   }
 };

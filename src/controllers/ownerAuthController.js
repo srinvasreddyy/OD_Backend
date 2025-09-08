@@ -4,6 +4,7 @@ import { generateOTP, isOTPExpired } from "../utils/OtpUtils.js";
 import { generateJWT } from "../utils/JwtUtils.js";
 import { sendOTPEmail } from "../utils/MailUtils.js";
 import logger from "../utils/logger.js";
+import config from "../config/env.js";
 
 export const requestOwnerOTP = async (req, res, next) => {
   try {
@@ -69,7 +70,7 @@ export const verifyOwnerOTP = async (req, res, next) => {
 
     res.cookie("token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: config.nodeEnv === "production",
       sameSite: "Strict",
       maxAge: 2 * 60 * 60 * 1000,
     });

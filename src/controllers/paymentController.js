@@ -3,6 +3,7 @@ import User from '../models/User.js';
 import Restaurant from '../models/Restaurant.js';
 import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
 import logger from "../utils/logger.js";
+import config from "../config/env.js";
 
 // --- Helper Functions (Backend calculation is CRITICAL for security) ---
 
@@ -114,8 +115,8 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             payment_method_types: ["card"],
             line_items,
             mode: "payment",
-            success_url: `${process.env.CLIENT_SUCCESS_REDIRECT_URL}?order_session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: process.env.CLIENT_FAILURE_REDIRECT_URL,
+            success_url: `${config.clientUrls.successRedirect}?order_session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: config.clientUrls.failureRedirect,
             customer_email: user.email, 
             metadata: {
                 userId: userId.toString(),

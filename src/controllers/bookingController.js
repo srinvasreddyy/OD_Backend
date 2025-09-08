@@ -6,6 +6,7 @@ import Table from "../models/Table.js";
 import Booking from "../models/Booking.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
+import config from "../config/env.js";
 
 // --- Helper Functions ---
 
@@ -156,8 +157,8 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 quantity: 1,
             }],
             mode: "payment",
-            success_url: `${process.env.CLIENT_SUCCESS_REDIRECT_URL}?booking_session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.CLIENT_FAILURE_REDIRECT_URL}?booking_cancelled=true`,
+            success_url: `${config.clientUrls.successRedirect}?booking_session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${config.clientUrls.failureRedirect}?booking_cancelled=true`,
             customer_email: req.user.email,
             metadata: {
                 customerId,

@@ -1,5 +1,6 @@
 import winston from 'winston';
 import path from 'path';
+import config from '../config/env.js';
 
 const logDir = 'logs';
 
@@ -33,7 +34,7 @@ const options = {
     level: 'debug',
     handleExceptions: true,
     // Use simple, colorful format for development, and JSON for production
-    format: process.env.NODE_ENV === 'production' 
+    format: config.nodeEnv === 'production' 
       ? fileFormat 
       : consoleFormat,
   },
