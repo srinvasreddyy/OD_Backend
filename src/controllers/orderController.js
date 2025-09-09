@@ -3,144 +3,11 @@ import Stripe from "stripe";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import Restaurant from "../models/Restaurant.js";
-import Announcement from "../models/Announcements.js";
-import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
-import logger from "../utils/logger.js";
 import { getPaginationParams } from "../utils/paginationUtils.js";
-import { calculateOrderPricing, validateCart, processOrderItems, calculateDeliveryFee } from "../utils/orderCalculation.js";
-import featureFlags from "../config/featureFlags.js";
+import logger from "../utils/logger.js";
 
-
-function createOrderObject({
-    user, restaurantId, orderType, deliveryAddress, orderedItemsToSave,
-    pricing, appliedOffer, paymentType, sessionId = null
-}) {
-    return new Order({
-        _id: new mongoose.Types.ObjectId(),
-        orderNumber: generateUniqueOrderNumber(),
-        restaurantId,
-        customerId: user._id,
-        customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
-        orderType,
-        deliveryAddress: orderType === 'delivery' ? deliveryAddress : null,
-        orderedItems: orderedItemsToSave,
-        pricing,
-        appliedOffer,
-        paymentType,
-        paymentStatus: paymentType === 'card' ? 'paid' : 'pending',
-        acceptanceStatus: 'pending',
-        ...(sessionId ? { sessionId } : {})
-    });
-}
-
-// --- Main Controller ---
-
-export const placeOrder = async (req, res, next) => {
-    const userId = req.user?._id;
-    const { orderType, deliveryAddress, paymentType, cartType, sessionId, promoCode } = req.body;
-
-    // Validation
-    if (!['delivery', 'pickup', 'dine-in'].includes(orderType)) {
-        return res.status(400).json({ success: false, message: "Invalid order type specified." });
-    }
-    if (orderType === 'delivery' && (!deliveryAddress || !deliveryAddress.coordinates)) {
-        return res.status(400).json({ success: false, message: "Delivery address with coordinates is required for delivery orders." });
-    }
-    if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
-        return res.status(400).json({ success: false, message: "A valid cart type ('foodCart' or 'groceriesCart') is required." });
-    }
-
-    const session = await mongoose.startSession();
-    try {
-        let finalOrder;
-        await session.withTransaction(async () => {
-            const user = await User.findById(userId).populate({
-                path: `${cartType}.menuItemId`,
-                populate: { path: 'restaurantId', select: '+stripeSecretKey' }
-            }).session(session);
-
-            if (!user) throw new Error("Authenticated user not found in database.");
-
-            const cart = user[cartType];
-            const { error: cartError, restaurantId } = validateCart(cart);
-            if (cartError) {
-                const e = new Error(cartError); e.statusCode = 400; throw e;
-            }
-
-            const restaurant = await Restaurant.findById(restaurantId).select('+stripeSecretKey').session(session).lean();
-            if (!restaurant) throw new Error("Restaurant data could not be loaded from cart.");
-            
-            const processedItems = await processOrderItems(cart);
-            
-            let deliveryFee = 0;
-            if (orderType === 'delivery') {
-                const [restLon, restLat] = restaurant.address.coordinates.coordinates;
-                const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
-                deliveryFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
-                if (deliveryFee === -1) {
-                    const e = new Error(`This address is outside the restaurant's ${restaurant.deliverySettings.maxDeliveryRadius} mile delivery radius.`);
-                    e.statusCode = 400;
-                    throw e;
-                }
-            }
-
-            let offerDetails = null;
-            if (featureFlags.ENABLE_OFFERS && promoCode) {
-                const offer = await Announcement.findOne({ 
-                    'offerDetails.promoCode': promoCode.toUpperCase(),
-                    isActive: true,
-                    restaurantId: new mongoose.Types.ObjectId(restaurantId),
-                    'offerDetails.validUntil': { $gte: new Date() }
-                }).session(session).lean();
-                if (offer) {
-                    offerDetails = offer.offerDetails;
-                }
-            }
-
-            const { pricing, appliedOffer } = calculateOrderPricing(processedItems, deliveryFee, restaurant, offerDetails);
-            
-            if (paymentType === 'card') {
-                if (!sessionId) { const e = new Error("sessionId is required for card payments."); e.statusCode = 400; throw e; }
-                if (!restaurant.stripeSecretKey) { throw new Error("Restaurant has not configured payments."); }
-                
-                const stripe = new Stripe(restaurant.stripeSecretKey);
-                const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
-
-                if (checkoutSession.payment_status !== 'paid') { const e = new Error("Payment not completed."); e.statusCode = 400; throw e; }
-                
-                const stripeAmount = checkoutSession.amount_total;
-                const backendAmount = Math.round(pricing.totalAmount * 100);
-
-                // Allow a small tolerance for floating point discrepancies
-                if (Math.abs(stripeAmount - backendAmount) > 1) { 
-                    const e = new Error(`Price mismatch. Expected ${pricing.totalAmount}. Please try again.`); e.statusCode = 409; throw e; 
-                }
-
-                const existingOrder = await Order.findOne({ sessionId }).session(session);
-                if (existingOrder) { finalOrder = existingOrder; return; }
-            }
-            
-            const order = createOrderObject({ user, restaurantId, orderType, deliveryAddress, orderedItemsToSave: processedItems, pricing, appliedOffer, paymentType, sessionId });
-            await order.save({ session });
-            finalOrder = order;
-
-            user[cartType] = [];
-            await user.save({ session });
-        });
-
-        return res.status(201).json({ success: true, message: "Order placed successfully!", data: finalOrder });
-
-    } catch (error) {
-        await session.abortTransaction();
-        logger.error("Error placing order", { error: error.message, statusCode: error.statusCode });
-        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred." });
-    } finally {
-        session.endSession();
-    }
-};
-
-// ... a large portion of orderController.js remains the same, so I am omitting it for brevity, as per the instructions.
-// The remaining functions (respondToOrder, cancelOrder, getUserOrders, getRestaurantOrders, etc.) are included below without changes.
+// The 'placeOrder' function has been removed as its logic is now handled 
+// asynchronously by the webhook controller to ensure reliability.
 
 export const respondToOrder = async (req, res, next) => {
     try {
@@ -235,11 +102,11 @@ export const cancelOrder = async (req, res, next) => {
 
 export const getUserOrders = async (req, res, next) => {
     try {
-        const  userId  = req.user?._id;
+        const userId = req.user?._id;
         const { page, limit, skip } = getPaginationParams(req.query);
-        const orders = await Order.find({ customerId: userId }).populate('restaurantId', 'restaurantName address').sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit));
+        const orders = await Order.find({ customerId: userId }).populate('restaurantId', 'restaurantName address').sort({ createdAt: -1 }).skip(skip).limit(limit);
         const totalOrders = await Order.countDocuments({ customerId: userId });
-        return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: parseInt(page) } });
+        return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
         logger.error("Error fetching user orders", { error: error.message });
         next(error);
@@ -248,18 +115,18 @@ export const getUserOrders = async (req, res, next) => {
 
 export const getRestaurantOrders = async (req, res, next) => {
     try {
-        const  restaurantId  = req.restaurant?._id;
-        const { status, acceptanceStatus } = req.query; // Added acceptanceStatus from original
+        const restaurantId = req.restaurant?._id;
+        const { status, acceptanceStatus } = req.query;
         const { page, limit, skip } = getPaginationParams(req.query);
 
         const query = { restaurantId };
         if (status) query.status = status;
         if (acceptanceStatus) query.acceptanceStatus = acceptanceStatus;
 
-        const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit));
+        const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(limit);
         const totalOrders = await Order.countDocuments(query);
 
-        return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: parseInt(page) } });
+        return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
         logger.error("Error fetching restaurant orders", { error: error.message });
         next(error);
@@ -268,12 +135,12 @@ export const getRestaurantOrders = async (req, res, next) => {
 
 export const getNewRestaurantOrders = async (req, res, next) => {
     try {
-        const  restaurantId  = req.restaurant?._id;
-       const { page, limit, skip } = getPaginationParams(req.query);
+        const restaurantId = req.restaurant?._id;
+        const { page, limit, skip } = getPaginationParams(req.query);
         const query = { restaurantId, status: 'placed', acceptanceStatus: 'pending' };
-        const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit));
+        const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(limit);
         const totalOrders = await Order.countDocuments(query);
-        return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: parseInt(page) } });
+        return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
         logger.error("Error fetching new restaurant orders", { error: error.message });
         next(error);
@@ -285,8 +152,8 @@ export const assignDeliveryPartner = async (req, res, next) => {
     try {
         session.startTransaction();
 
-        const  orderId  = req.params?.orderId;
-        const  deliveryPartnerId  = req.body?.deliveryPartnerId;
+        const orderId = req.params?.orderId;
+        const deliveryPartnerId = req.body?.deliveryPartnerId;
         const restaurantId = req.restaurant?._id
         const restaurantPartnerList = req.restaurant?.deliveryPartners
 
@@ -342,7 +209,7 @@ export const assignDeliveryPartner = async (req, res, next) => {
 
 export const getOrderDetails = async (req, res, next) => {
     try {
-        const  orderId  = req.params?.orderId;
+        const orderId = req.params?.orderId;
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
         }
@@ -407,7 +274,7 @@ export const updateOrderStatus = async (req, res, next) => {
 
 export const getRestaurantStats = async (req, res, next) => {
     try {
-        const  restaurantId  = req.restaurant?._id;
+        const restaurantId = req.restaurant?._id;
         
         const now = new Date();
         const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -470,7 +337,7 @@ export const getRestaurantStats = async (req, res, next) => {
 };
 
 export const getRestaurantSalesReport = async (req, res, next) => {
-    const restaurantId  = req.restaurant?._id;
+    const restaurantId = req.restaurant?._id;
     const { startDate, endDate } = req.query;
 
     try {
@@ -510,7 +377,7 @@ export const getRestaurantSalesReport = async (req, res, next) => {
 };
 
 export const getRestaurantOrdersReport = async (req, res, next) => {
-    const  restaurantId  = req.restaurant?._id;
+    const restaurantId = req.restaurant?._id;
 
     try {
         const ordersReport = await Order.aggregate([
@@ -542,7 +409,7 @@ export const getRestaurantOrdersReport = async (req, res, next) => {
 };
 
 export const getMenuItemPerformance = async (req, res, next) => {
-    const  restaurantId  = req.restaurant?._id;
+    const restaurantId = req.restaurant?._id;
 
     try {
         const itemPerformance = await Order.aggregate([

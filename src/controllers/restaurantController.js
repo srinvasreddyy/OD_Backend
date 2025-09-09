@@ -14,33 +14,54 @@ export const getRestaurants = async (req, res, next) => {
         const { type, search, acceptsDining } = req.query;
         const { page, limit, skip } = getPaginationParams(req.query); 
 
-        const approvedDocs = await RestaurantDocuments.find({ verificationStatus: 'approved' }).select('restaurantId').lean();
-        const approvedRestaurantIds = approvedDocs.map(doc => doc.restaurantId);
+        const pipeline = [];
 
-        const query = { 
-            isActive: true,
-            _id: { $in: approvedRestaurantIds }
-        };
-
+        // Stage 1: Match active restaurants
+        const matchStage = { isActive: true };
         if (type && ['food_delivery_and_dining', 'groceries', 'food_delivery'].includes(type)) {
-            query.restaurantType = type;
+            matchStage.restaurantType = type;
         }
-
         if (search) {
-            query.restaurantName = { $regex: search, $options: 'i' };
+            matchStage.restaurantName = { $regex: search, $options: 'i' };
         }
-        
         if (acceptsDining === 'true') {
-            query.acceptsDining = true;
+            matchStage.acceptsDining = true;
         }
+        pipeline.push({ $match: matchStage });
 
-        const restaurants = await Restaurant.find(query)
-            .select('-password -currentOTP -otpGeneratedAt -stripeSecretKey') // Exclude sensitive fields
-            .limit(limit)
-            .skip(skip)
-            .exec();
+        // Stage 2: Lookup to join with restaurantdocuments and filter for approved ones
+        pipeline.push({
+            $lookup: {
+                from: "restaurantdocuments",
+                localField: "_id",
+                foreignField: "restaurantId",
+                as: "documents"
+            }
+        });
+        pipeline.push({ $match: { "documents.verificationStatus": "approved" } });
+        
+        // Stage 3: Count total matching documents before pagination
+        const countPipeline = [...pipeline, { $count: "total" }];
+        const countResult = await Restaurant.aggregate(countPipeline);
+        const count = countResult[0]?.total || 0;
 
-        const count = await Restaurant.countDocuments(query);
+        // Stage 4: Add sorting, skipping, and limiting for pagination
+        pipeline.push({ $sort: { createdAt: -1 } });
+        pipeline.push({ $skip: skip });
+        pipeline.push({ $limit: limit });
+        
+        // Stage 5: Project to shape the final output and exclude sensitive fields
+        pipeline.push({
+            $project: {
+                password: 0,
+                currentOTP: 0,
+                otpGeneratedAt: 0,
+                stripeSecretKey: 0,
+                documents: 0
+            }
+        });
+
+        const restaurants = await Restaurant.aggregate(pipeline);
 
         return res.status(200).json({
             success: true,
@@ -53,6 +74,7 @@ export const getRestaurants = async (req, res, next) => {
         next(error);
     }
 };
+
 
 /**
  * @description Get public details for a single approved and active restaurant.

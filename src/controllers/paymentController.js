@@ -1,11 +1,12 @@
 import Stripe from "stripe";
+import { v4 as uuidv4 } from "uuid";
 import User from '../models/User.js';
 import Restaurant from '../models/Restaurant.js';
 import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
-// --- Helper Functions (Backend calculation is CRITICAL for security) ---
+// --- Helper Functions for a Clean and Maintainable Controller ---
 
 const calculateDeliveryFee = (distance, settings) => {
     if (distance > settings.maxDeliveryRadius) {
@@ -49,17 +50,19 @@ const processCartForCheckout = (cart, restaurant) => {
 export const createOrderCheckoutSession = async (req, res, next) => {
     try {
         const userId = req.user._id;
-        // deliveryAddress is now required for checkout
         const { cartType, deliveryAddress } = req.body; 
 
-        if (!cartType || !['food', 'groceries'].includes(cartType)) {
-            return res.status(400).json({ success: false, message: "A valid cartType ('food' or 'groceries') is required." });
+        // --- CORRECTED VALIDATION ---
+        // Now expects 'foodCart' or 'groceriesCart', consistent with the rest of the app.
+        if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
+            return res.status(400).json({ success: false, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
         if (!deliveryAddress || !deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates) {
              return res.status(400).json({ success: false, message: "Delivery address with coordinates is required to create a checkout session." });
         }
         
-        const cartField = cartType === 'food' ? 'foodCart' : 'groceriesCart';
+        // No longer need to manually construct the field name.
+        const cartField = cartType;
 
         const user = await User.findById(userId).populate(`${cartField}.menuItemId`).lean();
         if (!user) {
@@ -72,7 +75,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         }
         
         const restaurantId = cart[0].menuItemId.restaurantId;
-        // IMPORTANT: Fetch the restaurant with its stripeSecretKey
         const restaurant = await Restaurant.findById(restaurantId).select('+stripeSecretKey').lean();
         if (!restaurant || !restaurant.stripeSecretKey) {
             return res.status(500).json({ success: false, message: "This restaurant is currently not accepting online payments." });
@@ -80,7 +82,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
 
         const { subtotal, handlingCharge } = processCartForCheckout(cart, restaurant);
         
-        // Calculate delivery fee
         const [restaurantLon, restaurantLat] = restaurant.address.coordinates.coordinates;
         const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
         const distance = getDistanceFromLatLonInMiles(restaurantLat, restaurantLon, userLat, userLon);
@@ -96,7 +97,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Cart total must be greater than zero." });
         }
 
-        // Initialize Stripe with the restaurant's specific key
         const stripe = new Stripe(restaurant.stripeSecretKey);
 
         const line_items = [{
@@ -110,6 +110,8 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             },
             quantity: 1,
         }];
+        
+        const idempotencyKey = config.featureFlags.enableIdempotencyCheck ? uuidv4() : null;
 
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ["card"],
@@ -122,6 +124,8 @@ export const createOrderCheckoutSession = async (req, res, next) => {
                 userId: userId.toString(),
                 cartType: cartField,
                 restaurantId: restaurantId.toString(),
+                idempotencyKey,
+                deliveryAddress: JSON.stringify(deliveryAddress), 
             }
         });
 

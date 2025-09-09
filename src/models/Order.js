@@ -12,6 +12,7 @@ const orderSchema = new mongoose.Schema({
   orderNumber: { type: String, unique: true, required: true },
   billNumber: String,
   sessionId: { type: String, index: true },
+  idempotencyKey: { type: String, unique: true, sparse: true }, 
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant", required: true, index: true },
   customerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
   customerDetails: {
@@ -41,10 +42,10 @@ const orderSchema = new mongoose.Schema({
     subtotal: Number,
     deliveryFee: Number,
     handlingCharge: Number,
-    discountAmount: { type: Number, default: 0 }, // <-- NEW
+    discountAmount: { type: Number, default: 0 },
     totalAmount: Number
   },
-  appliedOffer: { // <-- NEW
+  appliedOffer: {
     type: appliedOfferSchema,
     default: null
   },

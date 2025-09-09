@@ -1,4 +1,3 @@
-// OD_Backend/src/controllers/menuItemsController.js
 import mongoose from "mongoose";
 import { v2 as cloudinary } from "cloudinary";
 import MenuItem from "../models/MenuItem.js";
@@ -35,23 +34,18 @@ const handleImageUploads = async (files) => {
     if (!fileList?.length) return [];
     const promises = fileList.map(file => uploadOnCloudinary(file));
     const results = await Promise.all(promises);
-    return results.map(r => r.secure_url);
+    return results.map(r => ({ url: r.secure_url, public_id: r.public_id }));
   };
 
-  const [displayUrls, galleryUrls] = await Promise.all([
+  const [displayUploads, galleryUploads] = await Promise.all([
     upload(files?.displayImage),
     upload(files?.galleryImages)
   ]);
 
-  return { displayImageUrl: displayUrls[0] || null, galleryImageUrls: galleryUrls };
-};
-
-
-const getPublicIdFromUrl = (url) => {
-    if (!url) return null;
-    const parts = url.split("/");
-    const publicIdWithExtension = parts.slice(-2).join("/");
-    return publicIdWithExtension.split(".").slice(0, -1).join(".");
+  return { 
+    displayImage: displayUploads[0] || null, 
+    galleryImages: galleryUploads 
+  };
 };
 
 
@@ -68,7 +62,7 @@ export const addMenuItem = async (req, res, next) => {
       throw new ApiError(400, "Missing required fields: itemName, isFood, itemType, basePrice.");
     }
 
-    const { displayImageUrl, galleryImageUrls } = await handleImageUploads(req.files);
+    const { displayImage, galleryImages } = await handleImageUploads(req.files);
     let newMenuItem;
 
     await session.withTransaction(async () => {
@@ -101,7 +95,11 @@ export const addMenuItem = async (req, res, next) => {
         restaurantId, itemName, description, isFood: isFoodBool,
         itemType, basePrice: parsedBasePrice, packageType,
         minimumQuantity, maximumQuantity, variantGroups, addonGroups, isBestseller,
-        displayImageUrl, imageUrls: galleryImageUrls, categories: categoryObjectIds,
+        displayImageUrl: displayImage?.url, 
+        displayImagePublicId: displayImage?.public_id,
+        imageUrls: galleryImages.map(img => img.url),
+        imagePublicIds: galleryImages.map(img => img.public_id),
+        categories: categoryObjectIds,
       });
 
       const savedItem = await menuItemData.save({ session });
@@ -172,12 +170,18 @@ export const updateMenuItem = async (req, res, next) => {
 
       if (req.files) {
           if (req.files.displayImage) {
-              const { displayImageUrl } = await handleImageUploads({ displayImage: req.files.displayImage });
-              if (displayImageUrl) updates.displayImageUrl = displayImageUrl;
+              const { displayImage } = await handleImageUploads({ displayImage: req.files.displayImage });
+              if (displayImage) {
+                updates.displayImageUrl = displayImage.url;
+                updates.displayImagePublicId = displayImage.public_id;
+              }
           }
           if (req.files.galleryImages) {
-              const { galleryImageUrls } = await handleImageUploads({ galleryImages: req.files.galleryImages });
-              if (galleryImageUrls.length > 0) updates.imageUrls = galleryImageUrls;
+              const { galleryImages } = await handleImageUploads({ galleryImages: req.files.galleryImages });
+              if (galleryImages.length > 0) {
+                updates.imageUrls = galleryImages.map(img => img.url);
+                updates.imagePublicIds = galleryImages.map(img => img.public_id);
+              }
           }
       }
       
@@ -218,13 +222,10 @@ export const deleteMenuItem = async (req, res, next) => {
         });
 
         if (menuItemToDelete) {
-            const imageUrlsToDelete = [menuItemToDelete.displayImageUrl, ...menuItemToDelete.imageUrls].filter(Boolean);
-            if (imageUrlsToDelete.length > 0) {
-                const publicIds = imageUrlsToDelete.map(getPublicIdFromUrl).filter(Boolean);
-                if (publicIds.length > 0) {
-                    const deletionPromises = publicIds.map(id => cloudinary.uploader.destroy(id));
-                    await Promise.allSettled(deletionPromises);
-                }
+            const publicIds = [menuItemToDelete.displayImagePublicId, ...menuItemToDelete.imagePublicIds].filter(Boolean);
+            if (publicIds.length > 0) {
+                const deletionPromises = publicIds.map(id => cloudinary.uploader.destroy(id));
+                await Promise.allSettled(deletionPromises);
             }
         }
 

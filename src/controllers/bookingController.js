@@ -1,10 +1,11 @@
-// OD_Backend/src/controllers/bookingController.js
+// src/controllers/bookingController.js
 import mongoose from "mongoose";
 import Stripe from "stripe";
 import Restaurant from "../models/Restaurant.js";
 import RestaurantTimings from "../models/RestaurantTimings.js";
 import Table from "../models/Table.js";
 import Booking from "../models/Booking.js";
+import SlotLock from "../models/SlotLock.js"; // <-- NEW IMPORT
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
@@ -99,18 +100,29 @@ export const getAvailableSlots = async (req, res, next) => {
             status: 'confirmed',
             bookingDate: { $gte: dateStart, $lt: dateEnd }
         }).select('tableId bookingDate').lean();
+        
+        // --- NEW: Fetch temporary locks ---
+        const activeLocks = config.featureFlags.enableBookingLocks 
+            ? await SlotLock.find({ tableId: { $in: availableTables.map(t => t._id) } }).lean() 
+            : [];
 
-        const bookedSlotsMap = new Map();
+        const bookedOrLockedSlotsMap = new Map();
         existingBookings.forEach(b => {
             const time = `${String(b.bookingDate.getUTCHours()).padStart(2, '0')}:${String(b.bookingDate.getUTCMinutes()).padStart(2, '0')}`;
             const key = `${b.tableId}-${time}`;
-            bookedSlotsMap.set(key, true);
+            bookedOrLockedSlotsMap.set(key, true);
         });
+        activeLocks.forEach(lock => {
+            const time = `${String(lock.bookingTime.getUTCHours()).padStart(2, '0')}:${String(lock.bookingTime.getUTCMinutes()).padStart(2, '0')}`;
+            const key = `${lock.tableId}-${time}`;
+            bookedOrLockedSlotsMap.set(key, true);
+        });
+
 
         const availability = availableTables.map(table => {
             const openSlots = potentialSlots.filter(slot => {
                 const key = `${table._id}-${slot}`;
-                return !bookedSlotsMap.has(key);
+                return !bookedOrLockedSlotsMap.has(key);
             });
             return {
                 tableId: table._id,
@@ -130,61 +142,103 @@ export const getAvailableSlots = async (req, res, next) => {
 };
 
 export const createBookingCheckoutSession = async (req, res, next) => {
+    const { tableId, date, time, guests } = req.body;
+    const customerId = req.user._id;
+
+    const dbSession = await mongoose.startSession();
     try {
-        const { tableId, date, time, guests } = req.body;
-        const customerId = req.user._id;
-
-        if (!tableId || !date || !time || !guests) {
-            return res.status(400).json({ success: false, message: "tableId, date, time, and guests are required." });
-        }
-
-        const table = await Table.findById(tableId)
-            .populate({
-                path: 'restaurantId',
-                select: 'restaurantName stripeSecretKey' // Select name and key
-            });
-
-        if (!table) return res.status(404).json({ success: false, message: "Table not found." });
-        if (!table.restaurantId.stripeSecretKey) {
-            return res.status(503).json({ success: false, message: "This restaurant is not currently accepting online bookings." });
-        }
-        
-        const stripe = new Stripe(table.restaurantId.stripeSecretKey);
-        const bookingFee = 100;
-
-        const session = await stripe.checkout.sessions.create({
-            payment_method_types: ["card"],
-            line_items: [{
-                price_data: {
-                    currency: "inr",
-                    product_data: {
-                        name: `Booking for ${table.restaurantId.restaurantName}`,
-                        description: `Table ${table.tableNumber} for ${guests} guests on ${date} at ${time}`,
-                    },
-                    unit_amount: bookingFee * 100,
-                },
-                quantity: 1,
-            }],
-            mode: "payment",
-            success_url: `${config.clientUrls.successRedirect}?booking_session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${config.clientUrls.failureRedirect}?booking_cancelled=true`,
-            customer_email: req.user.email,
-            metadata: {
-                customerId: customerId.toString(),
-                restaurantId: table.restaurantId._id.toString(),
-                tableId,
-                date,
-                time,
-                guests,
-                bookingFee
+        let checkoutUrl, sessionId;
+        await dbSession.withTransaction(async () => {
+            if (!tableId || !date || !time || !guests) {
+                throw { statusCode: 400, message: "tableId, date, time, and guests are required." };
             }
+
+            const [hour, minute] = time.split(':');
+            const bookingDate = new Date(date);
+            bookingDate.setUTCHours(hour, minute, 0, 0);
+
+            const table = await Table.findById(tableId).populate({
+                path: 'restaurantId',
+                select: 'restaurantName stripeSecretKey'
+            }).session(dbSession);
+
+            if (!table) throw { statusCode: 404, message: "Table not found." };
+            if (!table.restaurantId.stripeSecretKey) {
+                throw { statusCode: 503, message: "This restaurant is not currently accepting online bookings." };
+            }
+            
+            // --- NEW: Pessimistic Locking and Pending Booking ---
+            if (config.featureFlags.enableBookingLocks) {
+                const existingLock = await SlotLock.findOne({ tableId, bookingTime: bookingDate }).session(dbSession);
+                if (existingLock) {
+                    throw { statusCode: 409, message: "This time slot is currently being booked by another user. Please try again in a few minutes." };
+                }
+                const newLock = new SlotLock({ tableId, bookingTime: bookingDate });
+                await newLock.save({ session: dbSession });
+            }
+
+            const stripe = new Stripe(table.restaurantId.stripeSecretKey);
+            const bookingFee = 100;
+
+            const stripeSession = await stripe.checkout.sessions.create({
+                payment_method_types: ["card"],
+                line_items: [{
+                    price_data: {
+                        currency: "inr",
+                        product_data: {
+                            name: `Booking for ${table.restaurantId.restaurantName}`,
+                            description: `Table ${table.tableNumber} for ${guests} guests on ${date} at ${time}`,
+                        },
+                        unit_amount: bookingFee * 100,
+                    },
+                    quantity: 1,
+                }],
+                mode: "payment",
+                success_url: `${config.clientUrls.successRedirect}?booking_session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${config.clientUrls.failureRedirect}?booking_cancelled=true`,
+                customer_email: req.user.email,
+                metadata: {
+                    customerId: customerId.toString(),
+                    restaurantId: table.restaurantId._id.toString(),
+                    tableId,
+                    date,
+                    time,
+                    guests,
+                    bookingFee
+                }
+            });
+            
+            // Create a pending booking
+            const pendingBooking = new Booking({
+                bookingNumber: generateUniqueOrderNumber(),
+                restaurantId: table.restaurantId._id,
+                customerId,
+                tableId,
+                bookingDate,
+                guests,
+                status: 'pending',
+                paymentDetails: {
+                    sessionId: stripeSession.id,
+                    paymentStatus: 'paid', // Assumed paid upon success, Stripe webhook is better
+                    bookingFee: bookingFee
+                }
+            });
+            await pendingBooking.save({ session: dbSession });
+            
+            checkoutUrl = stripeSession.url;
+            sessionId = stripeSession.id;
         });
 
-        res.json({ success: true, url: session.url, sessionId: session.id });
+        res.json({ success: true, url: checkoutUrl, sessionId });
 
     } catch (error) {
         logger.error("Error creating booking checkout session", { error: error.message });
+        if (error.statusCode) {
+            return res.status(error.statusCode).json({ success: false, message: error.message });
+        }
         next(error);
+    } finally {
+        dbSession.endSession();
     }
 };
 
@@ -196,70 +250,67 @@ export const confirmBooking = async (req, res, next) => {
 
     const dbSession = await mongoose.startSession();
     try {
-        let newBooking;
-        let isNew = false;
+        let confirmedBooking;
         await dbSession.withTransaction(async () => {
-            const existingBooking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId }).session(dbSession);
-            if (existingBooking) {
-                newBooking = existingBooking;
-                return;
+            const pendingBooking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId, status: 'pending' }).session(dbSession);
+            
+            if (!pendingBooking) {
+                const alreadyConfirmed = await Booking.findOne({ 'paymentDetails.sessionId': sessionId, status: 'confirmed' }).session(dbSession);
+                if (alreadyConfirmed) {
+                    confirmedBooking = alreadyConfirmed;
+                    return; // Exit transaction, booking is already confirmed
+                }
+                throw { statusCode: 404, message: "No pending booking found for this session. It may have expired or already been confirmed." };
             }
 
-            const restaurantId = (await stripe.checkout.sessions.listLineItems(sessionId, { limit: 1 })).data[0].price.product.metadata.restaurantId;
-            const restaurant = await Restaurant.findById(restaurantId).select('+stripeSecretKey').session(dbSession);
+            const restaurant = await Restaurant.findById(pendingBooking.restaurantId).select('+stripeSecretKey').session(dbSession);
             if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant payment configuration not found.");
-            
+
             const stripe = new Stripe(restaurant.stripeSecretKey);
             const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
 
-            if (checkoutSession.payment_status !== 'paid') throw new Error("Payment not completed for this session.");
-
-            const { tableId, date, time, customerId, guests } = checkoutSession.metadata;
-            const [hour, minute] = time.split(':');
-            const bookingDate = new Date(date);
-            bookingDate.setUTCHours(hour, minute, 0, 0);
-
+            if (checkoutSession.payment_status !== 'paid') {
+                throw { statusCode: 402, message: "Payment not completed for this session." };
+            }
+            
             const doubleBookingCheck = await Booking.findOne({
-                tableId: new mongoose.Types.ObjectId(tableId),
-                bookingDate: bookingDate,
-                status: 'confirmed'
+                tableId: pendingBooking.tableId,
+                bookingDate: pendingBooking.bookingDate,
+                status: 'confirmed',
+                _id: { $ne: pendingBooking._id } // Exclude self
             }).session(dbSession);
 
             if (doubleBookingCheck) {
-                // Refund the payment
                 if (checkoutSession.payment_intent) {
                     await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
                 }
-                throw new Error("This time slot has just been booked. Your payment will be refunded.");
+                pendingBooking.status = 'cancelled_by_owner'; // Mark as cancelled
+                await pendingBooking.save({ session: dbSession });
+                throw { statusCode: 409, message: "This time slot was booked by another user just moments ago. Your payment will be refunded." };
             }
+            
+            pendingBooking.status = 'confirmed';
+            confirmedBooking = await pendingBooking.save({ session: dbSession });
 
-            const booking = new Booking({
-                bookingNumber: generateUniqueOrderNumber(),
-                restaurantId,
-                customerId,
-                tableId,
-                bookingDate,
-                guests,
-                paymentDetails: {
-                    sessionId: sessionId,
-                    paymentStatus: 'paid',
-                    bookingFee: checkoutSession.amount_total / 100
-                }
-            });
-            newBooking = await booking.save({ session: dbSession });
-            isNew = true;
+            // Clean up the lock as the booking is now confirmed
+            if (config.featureFlags.enableBookingLocks) {
+                await SlotLock.deleteOne({
+                    tableId: confirmedBooking.tableId,
+                    bookingTime: confirmedBooking.bookingDate
+                }).session(dbSession);
+            }
         });
         
-        return res.status(isNew ? 201 : 200).json({
+        return res.status(200).json({
             success: true,
-            message: isNew ? "Booking confirmed successfully!" : "Booking was already confirmed.",
-            data: newBooking
+            message: "Booking confirmed successfully!",
+            data: confirmedBooking
         });
 
     } catch (error) {
         logger.error("Error confirming booking", { error: error.message, sessionId });
-        if (error.message.includes("time slot has just been booked")) {
-            return res.status(409).json({ success: false, message: error.message });
+        if (error.statusCode) {
+            return res.status(error.statusCode).json({ success: false, message: error.message });
         }
         next(error);
     } finally {

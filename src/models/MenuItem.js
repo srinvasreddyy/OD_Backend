@@ -9,7 +9,9 @@ const menuItemSchema = new mongoose.Schema({
   itemName: { type: String, required: true, trim: true },
   description: { type: String, trim: true },
   displayImageUrl: { type: String },
+  displayImagePublicId: { type: String }, // <-- NEW
   imageUrls: [String],
+  imagePublicIds: [String], // <-- NEW
   categories: [{ type: mongoose.Schema.Types.ObjectId, ref: "Category" }],
   isFood: { type: Boolean, required: true },
   itemType: { type: String, enum: ['veg', 'non-veg', 'egg'], required: true },

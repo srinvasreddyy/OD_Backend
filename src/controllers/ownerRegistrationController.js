@@ -38,12 +38,10 @@ const validateAndParseInput = (body) => {
     const parsedTimings = timings ? (typeof timings === 'string' ? JSON.parse(timings) : timings) : null;
     const parsedDeliverySettings = typeof deliverySettings === 'string' ? JSON.parse(deliverySettings) : deliverySettings;
     
-    // Validate coordinates
     if (!parsedAddress.coordinates || !Array.isArray(parsedAddress.coordinates.coordinates) || parsedAddress.coordinates.coordinates.length !== 2) {
         throw new Error("Address must include valid coordinates: [longitude, latitude].");
     }
     
-    // Validate delivery settings
     if (parsedDeliverySettings.freeDeliveryRadius === undefined || parsedDeliverySettings.chargePerMile === undefined || parsedDeliverySettings.maxDeliveryRadius === undefined) {
         throw new Error("Delivery settings must include freeDeliveryRadius, chargePerMile, and maxDeliveryRadius.");
     }
@@ -105,7 +103,7 @@ export const registerOwner = async (req, res, next) => {
     
     const restaurant = new Restaurant({
       ...validatedData,
-      password: password, // The pre-save hook will handle hashing
+      password: password,
       address: parsedAddress,
       deliverySettings: parsedDeliverySettings,
       handlingChargesPercentage,

@@ -1,6 +1,5 @@
 import express from 'express';
 import {
-    placeOrder,
     getUserOrders,
     getOrderDetails,
     cancelOrder,
@@ -33,7 +32,7 @@ router.patch('/:orderId/assign-delivery', validateRestaurant, assignDeliveryPart
 
 
 // --- Customer-Facing Routes (Protected by validateUser) ---
-router.post('/place-order', validateUser, placeOrder);
+// The POST /place-order route is removed as this is now handled by the Stripe webhook.
 router.get('/my-orders', validateUser, getUserOrders);
 router.get('/:orderId', validateUser, getOrderDetails); 
 router.patch('/:orderId/cancel', validateUser, cancelOrder);

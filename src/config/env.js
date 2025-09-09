@@ -21,18 +21,17 @@ const requiredEnvVars = [
   'GOOGLE_CALLBACK_URL',
   'CLIENT_SUCCESS_REDIRECT_URL',
   'CLIENT_FAILURE_REDIRECT_URL',
+  'STRIPE_WEBHOOK_SECRET', // <-- NEW REQUIRED VAR
 ];
 
 const checkEnvVars = () => {
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
   if (missingVars.length > 0) {
-    // Use console.error for critical startup errors before logger is available.
     console.error(`FATAL: Missing required environment variables: ${missingVars.join(', ')}`);
     process.exit(1);
   }
 };
 
-// Run the check immediately
 checkEnvVars();
 
 const config = {
@@ -66,8 +65,14 @@ const config = {
     successRedirect: process.env.CLIENT_SUCCESS_REDIRECT_URL,
     failureRedirect: process.env.CLIENT_FAILURE_REDIRECT_URL,
   },
+  stripe: { // <-- NEW STRUCTURE FOR STRIPE KEYS
+    secretKey: process.env.STRIPE_SECRET_KEY,
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+  },
   featureFlags: {
     enableOffers: process.env.ENABLE_OFFERS === 'true',
+    enableBookingLocks: process.env.ENABLE_BOOKING_LOCKS === 'true',
+    enableIdempotencyCheck: process.env.ENABLE_IDEMPOTENCY_CHECK === 'true', // <-- NEW FLAG
   },
 };
 

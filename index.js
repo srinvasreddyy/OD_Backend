@@ -1,4 +1,4 @@
-// OD_Backend/index.js
+// index.js
 import express from "express";
 import cors from 'cors';
 import cookieParser from "cookie-parser";
@@ -25,11 +25,16 @@ import tableRoutes from './src/routes/table.routes.js';
 import bookingRoutes from './src/routes/booking.routes.js'; 
 import userRoutes from './src/routes/user.routes.js';
 import promoRoutes from './src/routes/promo.routes.js';
+import { stripeWebhookHandler } from "./src/controllers/webhookController.js"; // <-- NEW IMPORT
 
 const app = express();
 
 // --- Core Middleware ---
 app.set('trust proxy', 1);
+
+// --- NEW: Stripe Webhook Route (MUST BE BEFORE express.json()) ---
+app.post('/api/payment/stripe-webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
+
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
@@ -81,15 +86,13 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'OK', message: 'Server is healthy.' });
 });
 
-// --- Global Error Handling Middleware (REVISED) ---
+// --- Global Error Handling Middleware ---
 app.use((err, req, res, next) => {
-  // The logger is already capturing the full error details, including the stack.
   logger.error(err.message, { stack: err.stack, path: req.path, statusCode: err.statusCode });
   
   const statusCode = err.statusCode || 500;
   const message = err.message || "An unexpected server error occurred.";
   
-  // The response sent to the client should never contain the stack trace.
   const errorResponse = {
     success: false,
     message: message,
@@ -104,9 +107,7 @@ DBconnection()
 .then(() => {
   app.listen(PORT, () => {
     logger.info(`Server is running on port ${PORT}`);
-    if (config.featureFlags.enableOffers === true) {
-        logger.info('Feature Flag "ENABLE_OFFERS" is ON.');
-    }
+    logger.info('To test Stripe webhooks, run: stripe listen --forward-to localhost:3000/api/payment/stripe-webhook');
   });
 })
 .catch((error) => {
