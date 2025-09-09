@@ -1,17 +1,15 @@
-// src/controllers/bookingController.js
 import mongoose from "mongoose";
 import Stripe from "stripe";
 import Restaurant from "../models/Restaurant.js";
 import RestaurantTimings from "../models/RestaurantTimings.js";
 import Table from "../models/Table.js";
 import Booking from "../models/Booking.js";
-import SlotLock from "../models/SlotLock.js"; // <-- NEW IMPORT
+import SlotLock from "../models/SlotLock.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
 // --- Helper Functions ---
-
 const getDayOfWeek = (date) => {
     const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     return days[date.getUTCDay()];
@@ -101,7 +99,6 @@ export const getAvailableSlots = async (req, res, next) => {
             bookingDate: { $gte: dateStart, $lt: dateEnd }
         }).select('tableId bookingDate').lean();
         
-        // --- NEW: Fetch temporary locks ---
         const activeLocks = config.featureFlags.enableBookingLocks 
             ? await SlotLock.find({ tableId: { $in: availableTables.map(t => t._id) } }).lean() 
             : [];
@@ -167,7 +164,6 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 throw { statusCode: 503, message: "This restaurant is not currently accepting online bookings." };
             }
             
-            // --- NEW: Pessimistic Locking and Pending Booking ---
             if (config.featureFlags.enableBookingLocks) {
                 const existingLock = await SlotLock.findOne({ tableId, bookingTime: bookingDate }).session(dbSession);
                 if (existingLock) {
@@ -178,18 +174,18 @@ export const createBookingCheckoutSession = async (req, res, next) => {
             }
 
             const stripe = new Stripe(table.restaurantId.stripeSecretKey);
-            const bookingFee = 100;
+            const bookingFee = 1; // UPDATED: Set to 1 for £1.00
 
             const stripeSession = await stripe.checkout.sessions.create({
                 payment_method_types: ["card"],
                 line_items: [{
                     price_data: {
-                        currency: "inr",
+                        currency: "gbp", // UPDATED: Changed from "inr" to "gbp"
                         product_data: {
                             name: `Booking for ${table.restaurantId.restaurantName}`,
                             description: `Table ${table.tableNumber} for ${guests} guests on ${date} at ${time}`,
                         },
-                        unit_amount: bookingFee * 100,
+                        unit_amount: bookingFee * 100, // This correctly becomes 100 pence
                     },
                     quantity: 1,
                 }],
@@ -208,7 +204,6 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 }
             });
             
-            // Create a pending booking
             const pendingBooking = new Booking({
                 bookingNumber: generateUniqueOrderNumber(),
                 restaurantId: table.restaurantId._id,
@@ -219,7 +214,7 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 status: 'pending',
                 paymentDetails: {
                     sessionId: stripeSession.id,
-                    paymentStatus: 'paid', // Assumed paid upon success, Stripe webhook is better
+                    paymentStatus: 'paid',
                     bookingFee: bookingFee
                 }
             });
@@ -258,7 +253,7 @@ export const confirmBooking = async (req, res, next) => {
                 const alreadyConfirmed = await Booking.findOne({ 'paymentDetails.sessionId': sessionId, status: 'confirmed' }).session(dbSession);
                 if (alreadyConfirmed) {
                     confirmedBooking = alreadyConfirmed;
-                    return; // Exit transaction, booking is already confirmed
+                    return;
                 }
                 throw { statusCode: 404, message: "No pending booking found for this session. It may have expired or already been confirmed." };
             }
@@ -277,14 +272,14 @@ export const confirmBooking = async (req, res, next) => {
                 tableId: pendingBooking.tableId,
                 bookingDate: pendingBooking.bookingDate,
                 status: 'confirmed',
-                _id: { $ne: pendingBooking._id } // Exclude self
+                _id: { $ne: pendingBooking._id }
             }).session(dbSession);
 
             if (doubleBookingCheck) {
                 if (checkoutSession.payment_intent) {
                     await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
                 }
-                pendingBooking.status = 'cancelled_by_owner'; // Mark as cancelled
+                pendingBooking.status = 'cancelled_by_owner';
                 await pendingBooking.save({ session: dbSession });
                 throw { statusCode: 409, message: "This time slot was booked by another user just moments ago. Your payment will be refunded." };
             }
@@ -292,7 +287,6 @@ export const confirmBooking = async (req, res, next) => {
             pendingBooking.status = 'confirmed';
             confirmedBooking = await pendingBooking.save({ session: dbSession });
 
-            // Clean up the lock as the booking is now confirmed
             if (config.featureFlags.enableBookingLocks) {
                 await SlotLock.deleteOne({
                     tableId: confirmedBooking.tableId,

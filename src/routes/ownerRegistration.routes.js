@@ -1,10 +1,10 @@
 import express from 'express';
 import { uploadMemory } from '../middleware/multer.middleware.js'; 
-import { registerOwner } from '../controllers/ownerRegistrationController.js';
+import { registerOwner, verifyStripeKey } from '../controllers/ownerRegistrationController.js'; 
 
 const router = express.Router();
 
-// Define the fields Multer should expect
+// Define the fields Multer should expect for the main registration
 const ownerUploadFields = [
   { name: 'profileImage', maxCount: 1 },
   { name: 'images', maxCount: 5 },
@@ -13,6 +13,8 @@ const ownerUploadFields = [
   { name: 'vatCertificateImage', maxCount: 1 },
   { name: 'bankDocumentImage', maxCount: 1 }
 ];
+// --- Route for pre-submission verification ---
+router.post('/verify-stripe-key', verifyStripeKey);
 
 router.post('/register', uploadMemory.fields(ownerUploadFields), registerOwner);
 

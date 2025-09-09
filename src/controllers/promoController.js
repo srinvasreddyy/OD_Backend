@@ -34,7 +34,6 @@ export const applyPromoCode = async (req, res, next) => {
             return res.status(404).json({ success: false, message: "This promo code is invalid or has expired." });
         }
         
-        // --- Cart & Pricing Calculation ---
         const user = await User.findById(userId).populate(`${cartType}.menuItemId`).lean();
         if (!user) return res.status(404).json({ message: "User not found." });
         
@@ -56,15 +55,15 @@ export const applyPromoCode = async (req, res, next) => {
              const [restLon, restLat] = restaurant.address.coordinates.coordinates;
              const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
              deliveryFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
-             if (deliveryFee === -1) { // out of range
-                 deliveryFee = 0; // Don't block promo validation, but fee won't be applied.
+             if (deliveryFee === -1) {
+                 deliveryFee = 0;
              }
         }
         
         const { pricing } = calculateOrderPricing(processedItems, deliveryFee, restaurant, offer.offerDetails);
 
         if (pricing.discountAmount === 0) {
-             return res.status(400).json({ success: false, message: `Your order does not meet the minimum requirement of ₹${offer.offerDetails.minOrderValue} for this offer.` });
+             return res.status(400).json({ success: false, message: `Your order does not meet the minimum requirement of £${offer.offerDetails.minOrderValue} for this offer.` });
         }
 
         return res.status(200).json({

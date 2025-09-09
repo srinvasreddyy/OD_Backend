@@ -1,5 +1,5 @@
-// OD_Backend/src/controllers/ownerRegistrationController.js
 import mongoose from "mongoose";
+import Stripe from "stripe"; 
 import Restaurant from "../models/Restaurant.js";
 import RestaurantDocuments from "../models/RestaurantDocuments.js";
 import RestaurantMedia from "../models/RestaurantMedia.js";
@@ -83,8 +83,57 @@ const handleFileUploads = async (files) => {
     bankDocUrl: bankDocResult?.secure_url,
   };
 };
-// --- Main Controller ---
 
+// --- Main Controllers ---
+
+/**
+ * @description Verifies a Stripe secret key by fetching account details.
+ * @route POST /api/ownerRegistration/verify-stripe-key
+ * @access Public
+ */
+export const verifyStripeKey = async (req, res, next) => {
+  const { stripeSecretKey } = req.body;
+
+  if (!stripeSecretKey || !stripeSecretKey.startsWith('sk_')) {
+    return res.status(400).json({ success: false, message: "A valid Stripe secret key is required." });
+  }
+
+  try {
+    // Dynamically create a Stripe instance with the user-provided key
+    const stripe = new Stripe(stripeSecretKey);
+
+    // Retrieve account details associated with the key
+    const account = await stripe.accounts.retrieve();
+
+    // Sanitize the response to only send non-sensitive, verifiable information
+    const sanitizedAccountDetails = {
+      businessName: account.settings?.dashboard?.display_name || account.business_profile?.name || null,
+      country: account.country,
+      defaultCurrency: account.default_currency,
+    };
+
+    return res.status(200).json({
+      success: true,
+      message: "Stripe key is valid.",
+      data: sanitizedAccountDetails,
+    });
+
+  } catch (error) {
+    logger.error("Stripe key verification failed", { errorMessage: error.message });
+    // Stripe's specific error for an invalid key is an authentication error
+    if (error.type === 'StripeAuthenticationError') {
+      return res.status(401).json({ success: false, message: "Invalid Stripe API key provided." });
+    }
+    // For other potential errors (network issues, etc.), pass to the global handler
+    next(error);
+  }
+};
+
+/**
+ * @description Registers a new restaurant owner and their establishment.
+ * @route POST /api/ownerRegistration/register
+ * @access Public
+ */
 export const registerOwner = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();

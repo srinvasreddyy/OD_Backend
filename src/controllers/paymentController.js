@@ -6,8 +6,6 @@ import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
-// --- Helper Functions for a Clean and Maintainable Controller ---
-
 const calculateDeliveryFee = (distance, settings) => {
     if (distance > settings.maxDeliveryRadius) {
         return -1; // Indicates out of range
@@ -52,8 +50,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         const userId = req.user._id;
         const { cartType, deliveryAddress } = req.body; 
 
-        // --- CORRECTED VALIDATION ---
-        // Now expects 'foodCart' or 'groceriesCart', consistent with the rest of the app.
         if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
             return res.status(400).json({ success: false, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
@@ -61,7 +57,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
              return res.status(400).json({ success: false, message: "Delivery address with coordinates is required to create a checkout session." });
         }
         
-        // No longer need to manually construct the field name.
         const cartField = cartType;
 
         const user = await User.findById(userId).populate(`${cartField}.menuItemId`).lean();
@@ -101,7 +96,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
 
         const line_items = [{
             price_data: {
-                currency: "inr",
+                currency: "gbp", 
                 product_data: {
                     name: `Order from ${restaurant.restaurantName}`,
                     description: `Includes items, handling charges, and delivery.`

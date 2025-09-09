@@ -1,4 +1,3 @@
-// OD_Backend/src/models/Restaurant.js
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 
@@ -28,7 +27,8 @@ const restaurantSchema = new mongoose.Schema({
   phoneNumber: {
     type: String,
     required: [true, 'Phone number is required.'],
-    unique: true
+    unique: true,
+    match: [/^((\+44)|(0)) ?\d{4} ?\d{6}$/, 'Please fill a valid UK phone number']
   },
   primaryContactName: {
     type: String,
@@ -66,28 +66,27 @@ const restaurantSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Stripe secret key is required.'],
     trim: true,
-    select: false // Prevent key from being sent in queries by default
+    select: false
   },
   deliverySettings: {
-    freeDeliveryRadius: { // In miles
+    freeDeliveryRadius: {
       type: Number,
       required: [true, 'Free delivery radius is required.'],
       min: 0,
       default: 0
     },
-    chargePerMile: { // Cost per mile after free radius
+    chargePerMile: {
       type: Number,
       required: [true, 'Charge per mile is required.'],
       min: 0,
       default: 0
     },
-    maxDeliveryRadius: { // In miles
+    maxDeliveryRadius: {
       type: Number,
       required: [true, 'Maximum delivery radius is required.'],
       min: 0
     }
   },
-  // --- END NEW FIELDS ---
   isEmailVerified: { type: Boolean, default: false },
   currentOTP: { type: String, select: false },
   otpGeneratedAt: { type: Date, select: false },
