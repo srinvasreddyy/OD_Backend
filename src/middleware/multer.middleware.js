@@ -6,13 +6,13 @@ import path from "path";
 // --- REFACTORED: Centralized File Filter ---
 const imageFileFilter = (req, file, cb) => {
     // Whitelist of allowed image MIME types
-    const allowedMimeTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    const allowedMimeTypes = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/jpg"];
 
     if (allowedMimeTypes.includes(file.mimetype)) {
         cb(null, true); // Accept file
     } else {
         // Reject file and provide a clear error
-        cb(new Error("Invalid file type. Only JPEG, PNG, GIF, and WEBP are allowed."), false);
+        cb(new Error("Invalid file type. Only JPEG, JPG, PNG, GIF, and WEBP are allowed."), false);
     }
 };
 

@@ -1,3 +1,4 @@
+// OD_Backend/src/models/Restaurant.js
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 
@@ -88,11 +89,12 @@ const restaurantSchema = new mongoose.Schema({
   },
   // --- END NEW FIELDS ---
   isEmailVerified: { type: Boolean, default: false },
-  currentOTP: String,
-  otpGeneratedAt: Date,
+  currentOTP: { type: String, select: false },
+  otpGeneratedAt: { type: Date, select: false },
   password: {
     type: String,
     required: [true, 'Password is required.'],
+    select: false
   },
   isActive: {
     type: Boolean,

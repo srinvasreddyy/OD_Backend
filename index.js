@@ -71,7 +71,7 @@ app.use("/api/payment", generalApiLimiter, paymentRoutes);
 app.use('/api/tables', generalApiLimiter, tableRoutes);
 app.use('/api/bookings', generalApiLimiter, bookingRoutes);
 app.use('/api/users', generalApiLimiter, userRoutes);
-if (config.featureFlags.enableOffers) { 
+if (config.featureFlags.enableOffers === true) { 
     app.use('/api/promo', generalApiLimiter, promoRoutes);
 }
 
@@ -104,7 +104,7 @@ DBconnection()
 .then(() => {
   app.listen(PORT, () => {
     logger.info(`Server is running on port ${PORT}`);
-    if (config.featureFlags.enableOffers) {
+    if (config.featureFlags.enableOffers === true) {
         logger.info('Feature Flag "ENABLE_OFFERS" is ON.');
     }
   });

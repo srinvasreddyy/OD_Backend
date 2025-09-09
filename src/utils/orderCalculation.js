@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import MenuItem from '../models/MenuItem.js';
 import { getDistanceFromLatLonInMiles } from './locationUtils.js';
 

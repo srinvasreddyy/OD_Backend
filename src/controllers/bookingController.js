@@ -1,3 +1,4 @@
+// OD_Backend/src/controllers/bookingController.js
 import mongoose from "mongoose";
 import Stripe from "stripe";
 import Restaurant from "../models/Restaurant.js";
@@ -12,7 +13,7 @@ import config from "../config/env.js";
 
 const getDayOfWeek = (date) => {
     const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    return days[date.getDay()];
+    return days[date.getUTCDay()];
 };
 
 const generateTimeSlots = (start, end, intervalMinutes = 60) => {
@@ -23,7 +24,7 @@ const generateTimeSlots = (start, end, intervalMinutes = 60) => {
     let currentHour = startHour;
     let currentMinute = startMinute;
 
-    while (currentHour < endHour || (currentHour === endHour && currentMinute <= endMinute)) {
+    while (currentHour < endHour || (currentHour === endHour && currentMinute < endMinute)) {
         slots.push(`${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}`);
         currentMinute += intervalMinutes;
         if (currentMinute >= 60) {
@@ -47,13 +48,17 @@ export const getAvailableSlots = async (req, res, next) => {
         }
 
         const requestedDate = new Date(date);
-        requestedDate.setHours(0, 0, 0, 0);
+        if (isNaN(requestedDate.getTime())) {
+            return res.status(400).json({ success: false, message: "Invalid date format." });
+        }
+        
+        requestedDate.setUTCHours(0, 0, 0, 0);
 
         const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        today.setUTCHours(0, 0, 0, 0);
 
         const maxDate = new Date(today);
-        maxDate.setDate(today.getDate() + 2);
+        maxDate.setUTCDate(today.getUTCDate() + 2);
 
         if (requestedDate < today || requestedDate > maxDate) {
             return res.status(400).json({ success: false, message: "Bookings are only available for today and the next 2 days." });
@@ -61,6 +66,10 @@ export const getAvailableSlots = async (req, res, next) => {
 
         const dayOfWeek = getDayOfWeek(requestedDate);
         const guestCount = parseInt(guests, 10);
+        
+        if (isNaN(guestCount) || guestCount <= 0) {
+            return res.status(400).json({ success: false, message: "Invalid number of guests." });
+        }
 
         const restaurantTimings = await RestaurantTimings.findOne({ restaurantId });
         const dailyTimings = restaurantTimings?.timings.find(t => t.day === dayOfWeek && t.isOpen);
@@ -81,9 +90,9 @@ export const getAvailableSlots = async (req, res, next) => {
              return res.status(200).json({ success: true, data: [], message: "No tables available for the selected party size." });
         }
 
-        const dateStart = new Date(date);
-        const dateEnd = new Date(date);
-        dateEnd.setDate(dateEnd.getDate() + 1);
+        const dateStart = new Date(requestedDate);
+        const dateEnd = new Date(requestedDate);
+        dateEnd.setUTCDate(dateEnd.getUTCDate() + 1);
 
         const existingBookings = await Booking.find({
             restaurantId,
@@ -139,7 +148,7 @@ export const createBookingCheckoutSession = async (req, res, next) => {
         if (!table.restaurantId.stripeSecretKey) {
             return res.status(503).json({ success: false, message: "This restaurant is not currently accepting online bookings." });
         }
-
+        
         const stripe = new Stripe(table.restaurantId.stripeSecretKey);
         const bookingFee = 100;
 
@@ -161,7 +170,7 @@ export const createBookingCheckoutSession = async (req, res, next) => {
             cancel_url: `${config.clientUrls.failureRedirect}?booking_cancelled=true`,
             customer_email: req.user.email,
             metadata: {
-                customerId,
+                customerId: customerId.toString(),
                 restaurantId: table.restaurantId._id.toString(),
                 tableId,
                 date,
@@ -188,8 +197,15 @@ export const confirmBooking = async (req, res, next) => {
     const dbSession = await mongoose.startSession();
     try {
         let newBooking;
+        let isNew = false;
         await dbSession.withTransaction(async () => {
-            const { tableId, date, time, restaurantId } = (await stripe.checkout.sessions.retrieve(sessionId)).metadata;
+            const existingBooking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId }).session(dbSession);
+            if (existingBooking) {
+                newBooking = existingBooking;
+                return;
+            }
+
+            const restaurantId = (await stripe.checkout.sessions.listLineItems(sessionId, { limit: 1 })).data[0].price.product.metadata.restaurantId;
             const restaurant = await Restaurant.findById(restaurantId).select('+stripeSecretKey').session(dbSession);
             if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant payment configuration not found.");
             
@@ -198,16 +214,10 @@ export const confirmBooking = async (req, res, next) => {
 
             if (checkoutSession.payment_status !== 'paid') throw new Error("Payment not completed for this session.");
 
-            const existingBooking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId }).session(dbSession);
-            if (existingBooking) {
-                newBooking = existingBooking;
-                return;
-            }
-
-            const { customerId, guests } = checkoutSession.metadata;
+            const { tableId, date, time, customerId, guests } = checkoutSession.metadata;
             const [hour, minute] = time.split(':');
             const bookingDate = new Date(date);
-            bookingDate.setHours(hour, minute, 0, 0);
+            bookingDate.setUTCHours(hour, minute, 0, 0);
 
             const doubleBookingCheck = await Booking.findOne({
                 tableId: new mongoose.Types.ObjectId(tableId),
@@ -216,6 +226,10 @@ export const confirmBooking = async (req, res, next) => {
             }).session(dbSession);
 
             if (doubleBookingCheck) {
+                // Refund the payment
+                if (checkoutSession.payment_intent) {
+                    await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
+                }
                 throw new Error("This time slot has just been booked. Your payment will be refunded.");
             }
 
@@ -233,11 +247,12 @@ export const confirmBooking = async (req, res, next) => {
                 }
             });
             newBooking = await booking.save({ session: dbSession });
+            isNew = true;
         });
         
-        return res.status(newBooking._id ? 201 : 200).json({
+        return res.status(isNew ? 201 : 200).json({
             success: true,
-            message: newBooking.isNew ? "Booking confirmed successfully!" : "Booking was already confirmed.",
+            message: isNew ? "Booking confirmed successfully!" : "Booking was already confirmed.",
             data: newBooking
         });
 
@@ -265,7 +280,10 @@ export const getCustomerBookings = async (req, res, next) => {
             query.status = 'confirmed';
         } else if (status === 'past') {
             query.bookingDate = { $lt: now };
+        } else if (status) {
+            query.status = status;
         }
+
 
         const bookings = await Booking.find(query)
             .populate('restaurantId', 'restaurantName address')
@@ -282,12 +300,21 @@ export const getCustomerBookings = async (req, res, next) => {
 export const getRestaurantBookings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant._id;
-        const { status } = req.query;
+        const { status, date } = req.query;
         
         const query = { restaurantId };
         if (status) {
             query.status = status;
         }
+        
+        if (date) {
+            const startDate = new Date(date);
+            startDate.setUTCHours(0, 0, 0, 0);
+            const endDate = new Date(date);
+            endDate.setUTCHours(23, 59, 59, 999);
+            query.bookingDate = { $gte: startDate, $lte: endDate };
+        }
+
 
         const bookings = await Booking.find(query)
             .populate('customerId', 'fullName email')

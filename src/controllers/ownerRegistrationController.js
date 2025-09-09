@@ -1,3 +1,4 @@
+// OD_Backend/src/controllers/ownerRegistrationController.js
 import mongoose from "mongoose";
 import Restaurant from "../models/Restaurant.js";
 import RestaurantDocuments from "../models/RestaurantDocuments.js";
@@ -10,12 +11,12 @@ import logger from "../utils/logger.js";
 
 const validateAndParseInput = (body) => {
   const { 
-    restaurantName, ownerFullName, email, password, restaurantType, 
+    restaurantName, ownerFullName, email, password, restaurantType, phoneNumber,
     address, timings, handlingChargesPercentage, stripeSecretKey, deliverySettings 
   } = body;
 
   const requiredFields = {
-    restaurantName, ownerFullName, email, password, restaurantType, 
+    restaurantName, ownerFullName, email, password, restaurantType, phoneNumber,
     handlingChargesPercentage, stripeSecretKey, deliverySettings, address
   };
   for (const [key, value] of Object.entries(requiredFields)) {
@@ -41,10 +42,15 @@ const validateAndParseInput = (body) => {
     if (!parsedAddress.coordinates || !Array.isArray(parsedAddress.coordinates.coordinates) || parsedAddress.coordinates.coordinates.length !== 2) {
         throw new Error("Address must include valid coordinates: [longitude, latitude].");
     }
-
+    
+    // Validate delivery settings
+    if (parsedDeliverySettings.freeDeliveryRadius === undefined || parsedDeliverySettings.chargePerMile === undefined || parsedDeliverySettings.maxDeliveryRadius === undefined) {
+        throw new Error("Delivery settings must include freeDeliveryRadius, chargePerMile, and maxDeliveryRadius.");
+    }
+    
     return { ...body, parsedAddress, parsedTimings, parsedDeliverySettings };
   } catch (e) {
-    const error = new Error(`Invalid JSON format or missing data in address or deliverySettings. Details: ${e.message}`);
+    const error = new Error(`Invalid JSON format or missing data in address, timings, or deliverySettings. Details: ${e.message}`);
     error.statusCode = 400;
     throw error;
   }
@@ -87,11 +93,11 @@ export const registerOwner = async (req, res, next) => {
 
   try {
     const validatedData = validateAndParseInput(req.body);
-    const { email, password, parsedAddress, parsedTimings, parsedDeliverySettings, handlingChargesPercentage, stripeSecretKey } = validatedData;
+    const { email, password, parsedAddress, parsedTimings, parsedDeliverySettings, handlingChargesPercentage, stripeSecretKey, phoneNumber } = validatedData;
 
-    const existingRestaurant = await Restaurant.findOne({ email }).session(session);
+    const existingRestaurant = await Restaurant.findOne({ $or: [{ email }, { phoneNumber }] }).session(session);
     if (existingRestaurant) {
-      const error = new Error("A restaurant with this email already exists.");
+      const error = new Error("A restaurant with this email or phone number already exists.");
       error.statusCode = 409;
       throw error;
     }
@@ -103,7 +109,8 @@ export const registerOwner = async (req, res, next) => {
       address: parsedAddress,
       deliverySettings: parsedDeliverySettings,
       handlingChargesPercentage,
-      stripeSecretKey
+      stripeSecretKey,
+      phoneNumber
     });
     const restaurantId = restaurant._id;
 
@@ -135,6 +142,11 @@ export const registerOwner = async (req, res, next) => {
     }
     
     if (parsedTimings) {
+        if (!Array.isArray(parsedTimings) || parsedTimings.length === 0) {
+            const error = new Error("Invalid timings format. Expected an array of day objects.");
+            error.statusCode = 400;
+            throw error;
+        }
       const restaurantTimings = new RestaurantTimings({
           restaurantId,
           timings: parsedTimings,

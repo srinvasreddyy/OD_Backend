@@ -1,8 +1,10 @@
+// OD_Backend/src/controllers/authController.js
 import User from "../models/User.js";
 import { generateOTP, isOTPExpired } from "../utils/OtpUtils.js";
 import { generateJWT } from "../utils/JwtUtils.js";
 import { sendOTPEmail } from "../utils/MailUtils.js";
 import logger from "../utils/logger.js";
+import config from "../config/env.js";
 
 /**
  * @description Registers a new user of type 'customer'.
@@ -58,13 +60,14 @@ export const requestOTP = async (req, res, next) => {
       return res.status(400).json({ message: "Email is required." });
     }
 
-    // --- LOGIC CHANGE ---
-    // Do not create a user here. Only find an existing one.
     const user = await User.findOne({ email });
     if (!user) {
         return res.status(404).json({ success: false, message: "No account found with this email. Please register first." });
     }
-    // --- END LOGIC CHANGE ---
+    
+    if (user.userType !== 'customer' && user.userType !== 'delivery_partner') {
+        return res.status(403).json({ success: false, message: "This login is for customers and delivery partners only." });
+    }
 
     const otp = generateOTP();
     user.currentOTP = otp;
@@ -74,6 +77,7 @@ export const requestOTP = async (req, res, next) => {
     await sendOTPEmail(email, otp);
     res.status(200).json({ message: "OTP sent to your email for login." });
   } catch (error) {
+    logger.error("Error in requestOTP", { error: error.message });
     next(error);
   }
 };
@@ -117,19 +121,23 @@ export const verifyOTP = async (req, res, next) => {
     const token = generateJWT(user);
     res.cookie("token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: config.nodeEnv === "production",
       sameSite: "Strict",
       maxAge: 2 * 60 * 60 * 1000,
     });
     
+    const userResponse = {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        userType: user.userType,
+        isEmailVerified: user.isEmailVerified,
+    };
+    
     return res.status(200).json({
       success: true,
       message: "Login successful.",
-      data: {
-          fullName: user.fullName,
-          email: user.email,
-          userType: user.userType
-      }
+      data: userResponse
     });
 
   } catch (error) {
