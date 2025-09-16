@@ -26,7 +26,7 @@ export const requestOwnerOTP = async (req, res, next) => {
     if (!owner) {
       // To prevent email enumeration, we still return a success-like response.
       // The email will not be sent, but the client-side experience is the same.
-      logger.warn(`OTP request for non-existent owner email: ${email}`);
+      logger.warn(`OTP request for non-existent owner email: ${email}. No OTP was sent.`);
       return res.status(200).json({ message: "If a matching account exists, an OTP has been sent to the owner's email." });
     }
 
@@ -46,7 +46,7 @@ export const verifyOwnerOTP = async (req, res, next) => {
       return res.status(400).json({ message: "Email and OTP are required." });
     }
 
-    const owner = await Restaurant.findOne({ email });
+    const owner = await Restaurant.findOne({ email }).select('+currentOTP');
 
     // UNIFIED FAILURE RESPONSE:
     // If there's no owner OR the OTP is incorrect, return the same generic message.

@@ -18,7 +18,7 @@ router.get('/:restaurantId/availability', getAvailableSlots);
 
 // --- Private Restaurant Owner Routes ---
 router.put('/profile', validateRestaurant, updateRestaurantProfile);
-router.put('/settings', validateRestaurant, updateRestaurantSettings); // <-- NEW ROUTE
+router.put('/settings', validateRestaurant, updateRestaurantSettings); 
 router.patch('/toggle-status', validateRestaurant, toggleRestaurantStatus);
 
 
