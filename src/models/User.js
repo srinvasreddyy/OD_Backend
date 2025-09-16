@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import bcrypt from 'bcrypt';
 
 const addressSchema = new mongoose.Schema({
   _id: false, // Prevent Mongoose from adding unnecessary _id to subdocuments
@@ -65,6 +66,10 @@ const userSchema = new mongoose.Schema({
     lowercase: true,
     match: [/.+@.+\..+/, 'Invalid email address'],
   },
+  password: { 
+    type: String,
+    select: false,
+  },
   fullName: { type: String, trim: true },
   userType: {
     type: String,
@@ -84,11 +89,8 @@ const userSchema = new mongoose.Schema({
     vehicleType: String,
     vehicleNumber: String,
     isAvailable: Boolean,
-    currentLocation: {
-      type: { type: String, enum: ['Point'], },
-      coordinates: { type: [Number] }
-    },
     rating: Number
+    // The `currentLocation` field has been removed.
   },
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" },
   isActive: { type: Boolean, default: true }
@@ -96,5 +98,19 @@ const userSchema = new mongoose.Schema({
 
 userSchema.index({ "foodCart.cartItemKey": 1 });
 userSchema.index({ "groceriesCart.cartItemKey": 1 });
+
+// --- Password hashing middleware ---
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password') || !this.password) {
+    return next();
+  }
+  try {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 export default mongoose.model("User", userSchema);

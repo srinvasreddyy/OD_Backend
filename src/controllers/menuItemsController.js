@@ -5,7 +5,7 @@ import Restaurant from "../models/Restaurant.js";
 import Category from "../models/Category.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
 import logger from "../utils/logger.js";
-
+import { getPaginationParams } from "../utils/paginationUtils.js";
 // A custom error class for creating predictable, handled errors.
 class ApiError extends Error {
   constructor(statusCode, message) {

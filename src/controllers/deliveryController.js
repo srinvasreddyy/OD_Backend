@@ -41,41 +41,6 @@ export const updateAvailabilityStatus = async (req, res, next) => {
 };
 
 /**
- * @description Allows a delivery partner to update their current geographical location.
- * @route PATCH /api/delivery/location
- * @access Private (Delivery Partner)
- */
-export const updateLocation = async (req, res, next) => {
-    const partnerId = req.user?._id;
-    const { latitude, longitude } = req.body;
-
-    try {
-        if (typeof latitude !== 'number' || typeof longitude !== 'number') {
-            return res.status(400).json({ success: false, message: "Both 'latitude' and 'longitude' must be provided as numbers." });
-        }
-
-        const locationUpdate = {
-            "deliveryPartnerProfile.currentLocation": {
-                type: "Point",
-                coordinates: [longitude, latitude] // GeoJSON format: [longitude, latitude]
-            }
-        };
-
-        await User.findByIdAndUpdate(partnerId, { $set: locationUpdate });
-
-        return res.status(200).json({
-            success: true,
-            message: "Location updated successfully."
-        });
-
-    } catch (error) {
-        logger.error("Error updating delivery partner location", { error: error.message, partnerId });
-        next(error);
-    }
-};
-
-
-/**
  * @description Get orders assigned to the logged-in delivery partner.
  * @route GET /api/delivery/orders
  * @access Private (Delivery Partner)

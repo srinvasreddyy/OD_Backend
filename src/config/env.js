@@ -21,8 +21,14 @@ const requiredEnvVars = [
   'GOOGLE_CALLBACK_URL',
   'CLIENT_SUCCESS_REDIRECT_URL',
   'CLIENT_FAILURE_REDIRECT_URL',
-  'STRIPE_WEBHOOK_SECRET', // <-- NEW REQUIRED VAR
+  'STRIPE_WEBHOOK_SECRET',
 ];
+
+// Conditionally required vars for admin creation script
+if (process.env.ENABLE_SUPER_ADMIN_REGISTRATION === 'true') {
+  requiredEnvVars.push('SUPER_ADMIN_EMAIL', 'SUPER_ADMIN_FULL_NAME', 'SUPER_ADMIN_PASSWORD');
+}
+
 
 const checkEnvVars = () => {
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
@@ -65,15 +71,22 @@ const config = {
     successRedirect: process.env.CLIENT_SUCCESS_REDIRECT_URL,
     failureRedirect: process.env.CLIENT_FAILURE_REDIRECT_URL,
   },
-  stripe: { // <-- NEW STRUCTURE FOR STRIPE KEYS
+  stripe: { 
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
   },
   featureFlags: {
     enableOffers: process.env.ENABLE_OFFERS === 'true',
     enableBookingLocks: process.env.ENABLE_BOOKING_LOCKS === 'true',
-    enableIdempotencyCheck: process.env.ENABLE_IDEMPOTENCY_CHECK === 'true', // <-- NEW FLAG
+    enableIdempotencyCheck: process.env.ENABLE_IDEMPOTENCY_CHECK === 'true',
+    enableSuperAdminRegistration: process.env.ENABLE_SUPER_ADMIN_REGISTRATION === 'true', // <-- NEW FLAG
   },
+  // Super Admin Credentials (only used by the creation script)
+  superAdmin: {
+    email: process.env.SUPER_ADMIN_EMAIL,
+    fullName: process.env.SUPER_ADMIN_FULL_NAME,
+    password: process.env.SUPER_ADMIN_PASSWORD,
+  }
 };
 
 export default Object.freeze(config);

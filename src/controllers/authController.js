@@ -1,4 +1,5 @@
 // OD_Backend/src/controllers/authController.js
+import bcrypt from "bcrypt";
 import User from "../models/User.js";
 import { generateOTP, isOTPExpired } from "../utils/OtpUtils.js";
 import { generateJWT } from "../utils/JwtUtils.js";
@@ -142,6 +143,57 @@ export const verifyOTP = async (req, res, next) => {
 
   } catch (error) {
     logger.error("OTP verification failed", { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * @description Authenticates a super admin using email and password.
+ * @route POST /api/auth/admin/login
+ * @access Public
+ */
+export const loginSuperAdmin = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required." });
+    }
+
+    const admin = await User.findOne({ email, userType: 'super_admin' }).select('+password');
+
+    if (!admin) {
+      return res.status(401).json({ message: "Invalid credentials." });
+    }
+
+    const isMatch = await bcrypt.compare(password, admin.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid credentials." });
+    }
+
+    const token = generateJWT(admin);
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: config.nodeEnv === "production",
+      sameSite: "Strict",
+      maxAge: 12 * 60 * 60 * 1000,
+    });
+
+    const adminResponse = {
+        _id: admin._id,
+        fullName: admin.fullName,
+        email: admin.email,
+        userType: admin.userType,
+    };
+
+    return res.status(200).json({
+      success: true,
+      message: "Super admin login successful.",
+      data: adminResponse
+    });
+
+  } catch (error) {
+    logger.error("Super admin login failed", { error: error.message });
     next(error);
   }
 };

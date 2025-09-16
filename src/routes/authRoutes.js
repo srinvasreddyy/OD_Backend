@@ -4,6 +4,7 @@ import {
   registerUser,
   requestOTP,
   verifyOTP,
+  loginSuperAdmin, // <-- NEW IMPORT
 } from "../controllers/authController.js";
 import {
   requestOwnerOTP,
@@ -14,12 +15,13 @@ import config from "../config/env.js";
 
 const router = express.Router();
 
-// Step 1: Register a new customer account
+// --- Customer/User Routes ---
 router.post("/register", registerUser);
-
-// Step 2: Login for any user type (customer, delivery_partner)
 router.post("/request-otp", requestOTP);
 router.post("/verify-otp", verifyOTP);
+
+// --- Super Admin Login Route ---
+router.post("/admin/login", loginSuperAdmin);
 
 // --- Restaurant Owner Specific Login ---
 router.post("/owner/request-otp", requestOwnerOTP);
@@ -35,7 +37,7 @@ router.post("/logout", (req, res) => {
   res.status(200).json({ message: "Logged out successfully" });
 });
 
-// --- Google OAuth Routes (Unaffected) ---
+// --- Google OAuth Routes   ---
 router.get(
   "/google",
   passport.authenticate("google", { scope: ["profile", "email"], session: false })
