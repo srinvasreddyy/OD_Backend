@@ -1,3 +1,5 @@
+// src/controllers/promoController.js
+
 import Announcement from "../models/Announcements.js";
 import User from "../models/User.js";
 import Restaurant from "../models/Restaurant.js";
@@ -34,7 +36,7 @@ export const applyPromoCode = async (req, res, next) => {
             return res.status(404).json({ success: false, message: "This promo code is invalid or has expired." });
         }
         
-        const user = await User.findById(userId).populate(`${cartType}.menuItemId`).lean();
+        const user = await User.findById(userId).populate(`${cartType}.menuItemId`);
         if (!user) return res.status(404).json({ message: "User not found." });
         
         const cart = user[cartType];
@@ -65,6 +67,13 @@ export const applyPromoCode = async (req, res, next) => {
         if (pricing.discountAmount === 0) {
              return res.status(400).json({ success: false, message: `Your order does not meet the minimum requirement of £${offer.offerDetails.minOrderValue} for this offer.` });
         }
+        
+        //  Persist the applied promo code ---
+        user.customerProfile.appliedPromo = {
+            code: upperCasePromoCode,
+            cartType: cartType
+        };
+        await user.save();
 
         return res.status(200).json({
             success: true,

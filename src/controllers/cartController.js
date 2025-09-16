@@ -1,8 +1,12 @@
+// src/controllers/cartController.js
+
 import mongoose from "mongoose";
 import User from '../models/User.js';
 import MenuItem from '../models/MenuItem.js';
 import Restaurant from "../models/Restaurant.js";
+import Announcement from "../models/Announcements.js";
 import logger from "../utils/logger.js";
+import { calculateOrderPricing, processOrderItems } from "../utils/orderCalculation.js";
 
 // --- Helper Functions ---
 
@@ -68,42 +72,11 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
     };
 };
 
-const processCartItemsForSummary = (cart, restaurant) => {
-    return cart.map(cartItem => {
-        const { menuItemId: menuItem, quantity, selectedVariant, selectedAddons } = cartItem;
-        let lineItemSubtotal = menuItem.basePrice;
-        if (selectedVariant?.variantId) {
-            const group = menuItem.variantGroups.find(g => g.groupId === selectedVariant.groupId);
-            const variant = group?.variants.find(v => v.variantId === selectedVariant.variantId);
-            if (variant) lineItemSubtotal += (variant.additionalPrice || 0);
-        }
-        if (selectedAddons?.length) {
-            selectedAddons.forEach(addon => {
-                const group = menuItem.addonGroups.find(g => g.groupId === addon.groupId);
-                const option = group?.addons.find(a => a.addonId === addon.addonId);
-                if (option) lineItemSubtotal += (option.price || 0);
-            });
-        }
-        const itemTotal = lineItemSubtotal * quantity;
-        const itemHandlingCharge = itemTotal * (restaurant.handlingChargesPercentage / 100);
-        return { itemTotal, itemHandlingCharge };
-    });
-};
-
-const calculatePricingSummary = (processedItems) => {
-    if (processedItems.length === 0) {
-        return { subtotal: 0, handlingCharge: 0, totalAmount: 0, itemCount: 0 };
+// --- NEW HELPER ---
+const clearAppliedPromo = (user) => {
+    if (user.customerProfile?.appliedPromo?.code) {
+        user.customerProfile.appliedPromo = undefined;
     }
-    const subtotal = processedItems.reduce((acc, item) => acc + item.itemTotal, 0);
-    const handlingCharge = processedItems.reduce((acc, item) => acc + item.itemHandlingCharge, 0);
-    
-    // Delivery fee is not included here as it requires an address
-    const totalAmount = subtotal + handlingCharge;
-    return {
-        subtotal: Math.round(subtotal * 100) / 100,
-        handlingCharge: Math.round(handlingCharge * 100) / 100,
-        totalAmount: Math.round(totalAmount * 100) / 100,
-    };
 };
 
 // --- Main Controller Functions ---
@@ -127,6 +100,7 @@ export const addItemToCart = async (req, res, next) => {
         if (existingCart.length > 0 && existingCart[0].menuItemId) {
             const cartRestaurantId = existingCart[0].menuItemId.restaurantId.toString();
             if (cartRestaurantId !== restaurantId) {
+                clearAppliedPromo(user); // NEW: Clear promo if restaurant changes
                 return res.status(409).json({ message: "Your cart contains items from another restaurant. Please clear your cart to add items from this restaurant." });
             }
         }
@@ -204,33 +178,63 @@ export const getCartSummary = async (req, res, next) => {
     try {
         const userId = req.user?._id;
         const { cartType } = req.query;
-        if (!['food', 'groceries'].includes(cartType)) {
-            return res.status(400).json({ message: "A valid cartType ('food' or 'groceries') is required." });
+
+        if (!['foodCart', 'groceriesCart'].includes(cartType)) {
+            return res.status(400).json({ message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
-        const cartField = cartType === 'food' ? 'foodCart' : 'groceriesCart';
         
-        const user = await User.findById(userId).populate(`${cartField}.menuItemId`).lean();
+        const user = await User.findById(userId).populate(`${cartType}.menuItemId`);
         if (!user) return res.status(404).json({ message: "User not found." });
 
-        const cart = user[cartField];
+        const cart = user[cartType];
         if (cart.length === 0) {
+            clearAppliedPromo(user); // Ensure promo is cleared if cart is emptied
+            await user.save();
             return res.status(200).json({ success: true, data: { itemCount: 0, subtotal: 0, handlingCharge: 0, deliveryFee: null, totalAmount: 0 } });
         }
         
         const restaurantId = cart[0].menuItemId.restaurantId;
         const restaurant = await Restaurant.findById(restaurantId).lean();
         if(!restaurant) return res.status(404).json({ message: "Restaurant for items in cart not found." });
+        
+        const processedItems = await processOrderItems(cart);
+        
+        // --- NEW: Check for and validate applied promo ---
+        let offerDetails = null;
+        let appliedOfferData = null;
+        const appliedPromo = user.customerProfile?.appliedPromo;
 
-        const processedItems = processCartItemsForSummary(cart, restaurant);
-        const pricingSummary = calculatePricingSummary(processedItems);
+        if (appliedPromo?.code && appliedPromo.cartType === cartType) {
+            const offer = await Announcement.findOne({
+                'offerDetails.promoCode': appliedPromo.code,
+                isActive: true,
+                'offerDetails.validUntil': { $gte: new Date() }
+            }).lean();
+
+            if (offer && offer.restaurantId.toString() === restaurant._id.toString()) {
+                offerDetails = offer.offerDetails;
+            } else {
+                // Invalid promo found, clear it
+                clearAppliedPromo(user);
+                await user.save();
+            }
+        }
+        // --- END NEW ---
+        
+        // Delivery fee is not included here as it requires an address
+        const { pricing, appliedOffer } = calculateOrderPricing(processedItems, 0, restaurant, offerDetails);
         const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
         return res.status(200).json({ 
             success: true, 
             data: { 
                 itemCount: totalItems, 
-                ...pricingSummary,
+                subtotal: pricing.subtotal,
+                handlingCharge: pricing.handlingCharge,
+                discountAmount: pricing.discountAmount,
+                appliedOffer: appliedOffer,
                 deliveryFee: null, // Delivery fee requires address, cannot be calculated here
+                totalAmount: pricing.totalAmount,
             } 
         });
     } catch (error) {
@@ -293,15 +297,26 @@ export const removeItemFromCart = async (req, res, next) => {
         if (!cartItemKey) {
             return res.status(400).json({ message: "cartItemKey is required." });
         }
+        
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: "User not found." });
+        }
 
-        const result = await User.updateOne(
-            { _id: userId },
-            { $pull: { [cartType]: { cartItemKey: cartItemKey } } }
-        );
+        const cart = user[cartType];
+        const itemIndex = cart.findIndex(item => item.cartItemKey === cartItemKey);
 
-        if (result.modifiedCount === 0) {
+        if (itemIndex === -1) {
             return res.status(404).json({ message: "Item not found in cart." });
         }
+        
+        cart.splice(itemIndex, 1);
+        
+        if (cart.length === 0) {
+            clearAppliedPromo(user);
+        }
+
+        await user.save();
 
         return res.status(200).json({ success: true, message: "Item removed from cart successfully." });
     } catch (error) {
@@ -314,12 +329,20 @@ export const clearCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
         const { cartType } = req.body;
-        if (!['food', 'groceries'].includes(cartType)) {
-            return res.status(400).json({ message: "A valid cartType ('food' or 'groceries') is required." });
+        if (!['foodCart', 'groceriesCart'].includes(cartType)) {
+            return res.status(400).json({ message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
-        const cartField = cartType === 'food' ? 'foodCart' : 'groceriesCart';
-        await User.updateOne({ _id: userId }, { $set: { [cartField]: [] } });
-        return res.status(200).json({ message: `Your ${cartType} cart has been cleared.` });
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: "User not found." });
+        }
+        
+        user[cartType] = [];
+        clearAppliedPromo(user); // Also clear the promo
+        await user.save();
+
+        return res.status(200).json({ message: `Your ${cartType} has been cleared.` });
     } catch (error) {
         logger.error("Error clearing cart", { error: error.message });
         next(error);

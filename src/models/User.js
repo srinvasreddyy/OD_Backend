@@ -1,3 +1,5 @@
+// src/models/User.js
+
 import mongoose from "mongoose";
 import bcrypt from 'bcrypt';
 
@@ -81,7 +83,11 @@ const userSchema = new mongoose.Schema({
   customerProfile: {
     dateOfBirth: Date,
     gender: { type: String, enum: ['male', 'female', 'other'] },
-    addresses: [addressSchema]
+    addresses: [addressSchema],
+    appliedPromo: {
+        code: String,
+        cartType: { type: String, enum: ['foodCart', 'groceriesCart'] }
+    }
   },
   foodCart: [cartItemSchema],
   groceriesCart: [cartItemSchema],

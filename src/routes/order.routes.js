@@ -3,6 +3,7 @@ import {
     getUserOrders,
     getOrderDetails,
     cancelOrder,
+    placeCashOrder, // <-- NEW IMPORT
     getRestaurantOrders,
     getNewRestaurantOrders,
     respondToOrder,
@@ -32,7 +33,8 @@ router.patch('/:orderId/assign-delivery', validateRestaurant, assignDeliveryPart
 
 
 // --- Customer-Facing Routes (Protected by validateUser) ---
-// The POST /place-order route is removed as this is now handled by the Stripe webhook.
+// The POST for card-based orders is handled by the Stripe webhook.
+router.post('/place-cash-order', validateUser, placeCashOrder); 
 router.get('/my-orders', validateUser, getUserOrders);
 router.get('/:orderId', validateUser, getOrderDetails); 
 router.patch('/:orderId/cancel', validateUser, cancelOrder);

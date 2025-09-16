@@ -155,7 +155,7 @@ export const updateRestaurantProfile = async (req, res, next) => {
 export const updateRestaurantSettings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
-        const { handlingChargesPercentage, deliverySettings, stripeSecretKey } = req.body;
+        const { handlingChargesPercentage, deliverySettings, stripeSecretKey, acceptsCashOnDelivery } = req.body;
 
         const updateData = {};
         if (handlingChargesPercentage !== undefined) {
@@ -168,6 +168,10 @@ export const updateRestaurantSettings = async (req, res, next) => {
         if (deliverySettings) {
             // Add validation for deliverySettings object
             updateData.deliverySettings = deliverySettings;
+        }
+        
+        if (typeof acceptsCashOnDelivery === 'boolean') { 
+            updateData.acceptsCashOnDelivery = acceptsCashOnDelivery;
         }
 
         if (stripeSecretKey) {

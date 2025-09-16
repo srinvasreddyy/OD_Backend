@@ -4,10 +4,97 @@ import Order from "../models/Order.js";
 import User from "../models/User.js";
 import Restaurant from "../models/Restaurant.js";
 import { getPaginationParams } from "../utils/paginationUtils.js";
+import { calculateOrderPricing, validateCart, processOrderItems, calculateDeliveryFee } from "../utils/orderCalculation.js";
+import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 
-// The 'placeOrder' function has been removed as its logic is now handled 
-// asynchronously by the webhook controller to ensure reliability.
+
+/**
+ * @description Places a new order for Cash on Delivery.
+ * @route POST /api/orders/place-cash-order
+ * @access Private (User)
+ */
+export const placeCashOrder = async (req, res, next) => {
+    const { cartType, deliveryAddress, notes } = req.body;
+    const userId = req.user?._id;
+
+    const dbSession = await mongoose.startSession();
+    try {
+        let newOrder;
+        await dbSession.withTransaction(async () => {
+            // 1. Basic Input Validation
+            if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
+                throw { statusCode: 400, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." };
+            }
+            if (!deliveryAddress || !deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates) {
+                throw { statusCode: 400, message: "A valid delivery address is required." };
+            }
+
+            // 2. Fetch User and Cart
+            const user = await User.findById(userId).populate(`${cartType}.menuItemId`).session(dbSession);
+            if (!user) throw { statusCode: 404, message: "User not found." };
+            
+            const cart = user[cartType];
+            const { error: cartError, restaurantId } = validateCart(cart);
+            if (cartError) throw { statusCode: 400, message: cartError };
+
+            // 3. Fetch Restaurant and Check COD Availability
+            const restaurant = await Restaurant.findById(restaurantId).session(dbSession).lean();
+            if (!restaurant) throw { statusCode: 404, message: `Restaurant with ID ${restaurantId} not found.` };
+            if (!restaurant.acceptsCashOnDelivery) {
+                throw { statusCode: 400, message: "This restaurant does not accept Cash on Delivery." };
+            }
+            if (!restaurant.isActive) {
+                 throw { statusCode: 400, message: "This restaurant is currently not accepting orders." };
+            }
+
+            // 4. Process items and calculate pricing
+            const processedItems = await processOrderItems(cart);
+            
+            const [restLon, restLat] = restaurant.address.coordinates.coordinates;
+            const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
+            const deliveryFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
+            if (deliveryFee === -1) {
+                throw { statusCode: 400, message: "Delivery address is out of the restaurant's range." };
+            }
+
+            const { pricing } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
+
+            // 5. Create and Save the Order
+            const orderData = new Order({
+                orderNumber: generateUniqueOrderNumber(),
+                restaurantId,
+                customerId: userId,
+                customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
+                orderType: 'delivery',
+                deliveryAddress,
+                orderedItems: processedItems,
+                pricing,
+                paymentType: 'cash',
+                paymentStatus: 'pending', // Will be marked 'paid' by delivery partner
+                acceptanceStatus: 'pending',
+                notes: notes || '',
+            });
+
+            const savedOrder = await orderData.save({ session: dbSession });
+            
+            // 6. Clear the user's cart
+            user[cartType] = [];
+            await user.save({ session: dbSession });
+
+            newOrder = savedOrder;
+        });
+
+        return res.status(201).json({ success: true, message: "Order placed successfully!", data: newOrder });
+        
+    } catch (error) {
+        await dbSession.abortTransaction();
+        logger.error("Error placing cash order", { error: error.message, statusCode: error.statusCode, userId });
+        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred while placing the order." });
+    } finally {
+        dbSession.endSession();
+    }
+};
 
 export const respondToOrder = async (req, res, next) => {
     try {
