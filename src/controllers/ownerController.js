@@ -96,3 +96,108 @@ export const getDeliveryPartners = async (req, res, next) => {
         next(error);
     }
 };
+
+/**
+ * @description Deletes a delivery partner.
+ * @route DELETE /api/owner/delivery-partners/:partnerId
+ * @access Private (Restaurant Owner)
+ */
+export const deleteDeliveryPartner = async (req, res, next) => {
+    const restaurantId = req.restaurant._id;
+    const { partnerId } = req.params;
+    const session = await mongoose.startSession();
+
+    try {
+        if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+            return res.status(400).json({ success: false, message: "Invalid partner ID format." });
+        }
+
+        await session.withTransaction(async () => {
+            // 1. Remove from Restaurant's list
+            await Restaurant.updateOne(
+                { _id: restaurantId },
+                { $pull: { deliveryPartners: partnerId } },
+                { session }
+            );
+
+            // 2. Check and Delete the User document
+            // Ensure we only delete a partner belonging to this restaurant to prevent unauthorized deletions
+            const partner = await User.findOneAndDelete(
+                { _id: partnerId, restaurantId, userType: 'delivery_partner' },
+                { session }
+            );
+
+            if (!partner) {
+                // If partner wasn't found/deleted, throw specific error (will be caught below)
+                const error = new Error("Delivery partner not found or not associated with your restaurant.");
+                error.statusCode = 404;
+                throw error;
+            }
+        });
+
+        return res.status(200).json({ success: true, message: "Delivery partner deleted successfully." });
+
+    } catch (error) {
+        logger.error("Error deleting delivery partner", { error: error.message, partnerId });
+        if (error.statusCode) {
+             return res.status(error.statusCode).json({ success: false, message: error.message });
+        }
+        next(error);
+    } finally {
+        session.endSession();
+    }
+};
+
+
+/**
+ * @description Updates an existing delivery partner's details.
+ * @route PUT /api/owner/delivery-partners/:partnerId
+ * @access Private (Restaurant Owner)
+ */
+export const updateDeliveryPartner = async (req, res, next) => {
+    const restaurantId = req.restaurant._id;
+    const { partnerId } = req.params;
+    const { fullName, phoneNumber, deliveryPartnerProfile } = req.body;
+
+    try {
+        if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+            return res.status(400).json({ success: false, message: "Invalid partner ID format." });
+        }
+
+        // We do NOT include 'email' in the update object to prevent it from being changed.
+        const updateData = {};
+        if (fullName) updateData.fullName = fullName;
+        if (phoneNumber) updateData.phoneNumber = phoneNumber;
+        
+        // Handle nested profile updates properly
+        if (deliveryPartnerProfile) {
+            if (deliveryPartnerProfile.vehicleType) {
+                updateData["deliveryPartnerProfile.vehicleType"] = deliveryPartnerProfile.vehicleType;
+            }
+            if (deliveryPartnerProfile.vehicleNumber) {
+                updateData["deliveryPartnerProfile.vehicleNumber"] = deliveryPartnerProfile.vehicleNumber;
+            }
+        }
+
+        // Find the user and ensure they belong to this restaurant before updating
+        const updatedPartner = await User.findOneAndUpdate(
+            { _id: partnerId, restaurantId, userType: 'delivery_partner' },
+            { $set: updateData },
+            { new: true, runValidators: true }
+        ).select('-password -currentOTP -otpGeneratedAt');
+
+        if (!updatedPartner) {
+            return res.status(404).json({ success: false, message: "Delivery partner not found or not associated with your restaurant." });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Delivery partner updated successfully.",
+            data: updatedPartner
+        });
+
+    } catch (error) {
+        logger.error("Error updating delivery partner", { error: error.message, partnerId });
+        next(error);
+    }
+};

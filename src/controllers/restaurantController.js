@@ -230,3 +230,19 @@ export const toggleRestaurantStatus = async (req, res, next) => {
         next(error);
     }
 };
+
+export const getRestaurantMe = async (req, res, next) => {
+    try {
+        // req.restaurant is set by the validateRestaurant middleware
+        const restaurant = await Restaurant.findById(req.restaurant._id);
+        
+        if (!restaurant) {
+            return res.status(404).json({ success: false, message: "Restaurant not found." });
+        }
+
+        return res.status(200).json({ success: true, data: restaurant });
+    } catch (error) {
+        logger.error("Error fetching my restaurant details", { error: error.message });
+        next(error);
+    }
+};

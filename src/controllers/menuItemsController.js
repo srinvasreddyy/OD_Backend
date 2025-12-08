@@ -144,7 +144,12 @@ export const updateMenuItem = async (req, res, next) => {
       simpleFields.forEach(field => {
           if (body[field] !== undefined) {
               const isBooleanField = ['isBestseller', 'isAvailable'].includes(field);
-              updates[field] = isBooleanField ? body[field] === 'true' : body[field];
+              // FIX: Handle both boolean values and string values "true"/"false"
+              if (isBooleanField) {
+                  updates[field] = (body[field] === true || body[field] === 'true');
+              } else {
+                  updates[field] = body[field];
+              }
           }
       });
       
@@ -155,7 +160,8 @@ export const updateMenuItem = async (req, res, next) => {
       const parseJsonField = (jsonString, fieldName) => {
           if (!jsonString) return undefined;
           try {
-              return JSON.parse(jsonString);
+              // Handle if it's already an object (from JSON body) vs string (from FormData)
+              return typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
           } catch (e) {
               throw new ApiError(400, `Invalid JSON format for field: '${fieldName}'.`);
           }

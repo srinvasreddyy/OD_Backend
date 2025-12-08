@@ -8,7 +8,7 @@ import config from "../config/env.js";
 
 const calculateDeliveryFee = (distance, settings) => {
     if (distance > settings.maxDeliveryRadius) {
-        return -1; // Indicates out of range
+        return -1; 
     }
     if (distance <= settings.freeDeliveryRadius) {
         return 0;
