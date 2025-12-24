@@ -1,116 +1,127 @@
-// index.js
 import express from "express";
-import cors from 'cors';
+import mongoose from "mongoose";
+import dotenv from "dotenv";
+import cors from "cors";
 import cookieParser from "cookie-parser";
-import passport from "passport";
-import rateLimit from 'express-rate-limit'; 
-import DBconnection from "./src/config/db.js";
-import './src/config/passport-setup.js';
+import helmet from "helmet";
+import mongoSanitize from "express-mongo-sanitize";
+import rateLimit from "express-rate-limit";
 import logger from "./src/utils/logger.js";
-import config from "./src/config/env.js"; 
+import config from "./src/config/env.js";
+import connectDB from "./src/config/db.js";
+import passport from "passport";
+import "./src/config/passport-setup.js";
+import createSuperAdmin from "./src/scripts/createSuperAdmin.js";
 
-// Route Imports
-import authRoutes from './src/routes/authRoutes.js';
-import ownerRegistrationRoutes from "./src/routes/ownerRegistration.routes.js";
+// --- ROUTES ---
+import authRoutes from "./src/routes/authRoutes.js";
 import restaurantRoutes from "./src/routes/restaurant.routes.js";
+import adminRoutes from "./src/routes/admin.routes.js";
+import ownerRegistrationRoutes from "./src/routes/ownerRegistration.routes.js";
+import ownerRoutes from "./src/routes/owner.routes.js";
 import menuItemRoutes from "./src/routes/menuItem.routes.js";
 import cartRoutes from "./src/routes/cart.routes.js";
 import orderRoutes from "./src/routes/order.routes.js";
-import announcementRoutes from "./src/routes/announcements.routes.js";
-import adminRoutes from './src/routes/admin.routes.js';
-import ownerRoutes from './src/routes/owner.routes.js';
-import deliveryRoutes from './src/routes/delivery.routes.js';
+import deliveryRoutes from "./src/routes/delivery.routes.js";
 import paymentRoutes from "./src/routes/payment.routes.js";
-import tableRoutes from './src/routes/table.routes.js';
-import bookingRoutes from './src/routes/booking.routes.js'; 
-import userRoutes from './src/routes/user.routes.js';
-import promoRoutes from './src/routes/promo.routes.js';
-import { stripeWebhookHandler } from "./src/controllers/webhookController.js"; // <-- NEW IMPORT
+import promoRoutes from "./src/routes/promo.routes.js";
+import tableRoutes from "./src/routes/table.routes.js";
+import bookingRoutes from "./src/routes/booking.routes.js";
+import announcementsRoutes from "./src/routes/announcements.routes.js";
+import userRoutes from "./src/routes/user.routes.js";
+import webhookController from "./src/controllers/webhookController.js";
+
+// --- MISSING IMPORT ADDED HERE ---
+import User from "./src/models/User.js"; 
+
+dotenv.config();
 
 const app = express();
 
-// --- Core Middleware ---
-app.set('trust proxy', 1);
+// 1. Webhook Route (MUST be before express.json)
+app.post(
+  "/api/payment/stripe-webhook",
+  express.raw({ type: "application/json" }),
+  webhookController.handleStripeWebhook
+);
 
-// --- NEW: Stripe Webhook Route (MUST BE BEFORE express.json()) ---
-app.post('/api/payment/stripe-webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
-
+// 2. Security & Parsing Middleware
+app.use(helmet());
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", config.clientUrls.customer, config.clientUrls.admin, config.clientUrls.restaurant],
+    credentials: true,
+  })
+);
 app.use(express.json());
-app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors({
-  origin: config.corsOrigin, 
-  credentials: true 
-}));
+app.use(cookieParser());
+app.use(mongoSanitize());
+
+// Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+});
+app.use(limiter);
+
+// Passport
 app.use(passport.initialize());
 
-// --- Security Middleware: Rate Limiting ---
-const authLimiter = rateLimit({
-	windowMs: 15 * 60 * 1000,
-	max: 20,
-	standardHeaders: true,
-	legacyHeaders: false,
-    message: 'Too many requests from this IP, please try again after 15 minutes.',
-});
+// 3. Routes
+app.use("/api/auth", authRoutes);
+app.use("/api/restaurants", restaurantRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/owner-registrations", ownerRegistrationRoutes);
+app.use("/api/owner", ownerRoutes);
+app.use("/api/menu-items", menuItemRoutes);
+app.use("/api/cart", cartRoutes);
+app.use("/api/orders", orderRoutes);
+app.use("/api/delivery", deliveryRoutes);
+app.use("/api/payment", paymentRoutes);
+app.use("/api/promos", promoRoutes);
+app.use("/api/tables", tableRoutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/announcements", announcementsRoutes);
+app.use("/api/users", userRoutes);
 
-const generalApiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: 'Too many requests from this IP, please try again after 15 minutes.',
-});
-
-// --- API Routes ---
-app.use('/api/auth', authLimiter, authRoutes);
-app.use('/api/ownerRegistration', authLimiter, ownerRegistrationRoutes);
-app.use('/api/restaurants', generalApiLimiter, restaurantRoutes);
-app.use('/api/menuItems', generalApiLimiter, menuItemRoutes);
-app.use('/api/cart', generalApiLimiter, cartRoutes);
-app.use('/api/orders', generalApiLimiter, orderRoutes);
-app.use('/api/announcements', generalApiLimiter, announcementRoutes);
-app.use('/api/admin', generalApiLimiter, adminRoutes);
-app.use('/api/owner', generalApiLimiter, ownerRoutes);
-app.use('/api/delivery', generalApiLimiter, deliveryRoutes);
-app.use("/api/payment", generalApiLimiter, paymentRoutes);
-app.use('/api/tables', generalApiLimiter, tableRoutes);
-app.use('/api/bookings', generalApiLimiter, bookingRoutes);
-app.use('/api/users', generalApiLimiter, userRoutes);
-if (config.featureFlags.enableOffers === true) { 
-    app.use('/api/promo', generalApiLimiter, promoRoutes);
-}
-
-
-// --- Health Check Route ---
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'OK', message: 'Server is healthy.' });
-});
-
-// --- Global Error Handling Middleware ---
+// 4. Error Handling
 app.use((err, req, res, next) => {
-  logger.error(err.message, { stack: err.stack, path: req.path, statusCode: err.statusCode });
-  
-  const statusCode = err.statusCode || 500;
-  const message = err.message || "An unexpected server error occurred.";
-  
-  const errorResponse = {
+  logger.error("Unhandled Error", { error: err.message, stack: err.stack });
+  res.status(err.status || 500).json({
     success: false,
-    message: message,
-  };
-  
-  res.status(statusCode).json(errorResponse);
+    message: err.message || "Internal Server Error",
+  });
 });
 
-// --- Server Initialization ---
-const PORT = config.port;
-DBconnection()
-.then(() => {
-  app.listen(PORT, () => {
-    logger.info(`Server is running on port ${PORT}`);
-    logger.info('To test Stripe webhooks, run: stripe listen --forward-to localhost:3000/api/payment/stripe-webhook');
-  });
-})
-.catch((error) => {
-  logger.error("MongoDB connection error:", { error: error.message });
-  process.exit(1);
-});
+// 5. Start Server
+const PORT = config.port || 5000;
+
+const startServer = async () => {
+  try {
+    await connectDB();
+    
+    // --- TEMPORARY INDEX FIX ---
+    // This runs once to delete the old index, then you can remove it.
+    try {
+        await User.collection.dropIndex("email_1");
+        console.log("✅ SUCCESS: Old 'email_1' index dropped. You can now restart.");
+    } catch (error) {
+        // If it says "index not found", that's GOOD. It means it's already gone.
+        console.log("ℹ️ Index status:", error.message);
+    }
+    // ---------------------------
+
+    await createSuperAdmin();
+    
+    app.listen(PORT, () => {
+      logger.info(`Server is running on port ${PORT}`);
+      logger.info(`To test Stripe webhooks, run: stripe listen --forward-to localhost:${PORT}/api/payment/stripe-webhook`);
+    });
+  } catch (error) {
+    logger.error("Failed to start server", { error: error.message });
+    process.exit(1);
+  }
+};
+
+startServer();

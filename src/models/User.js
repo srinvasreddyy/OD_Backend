@@ -60,9 +60,18 @@ const userSchema = new mongoose.Schema({
     type: String
   },
   phoneNumber: String,
+  // NEW: Added username field
+  username: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true
+  },
   email: {
     type: String,
-    required: true,
+    // REMOVED: required: true, 
+    // ADDED: sparse: true to allow users without email (delivery partners)
+    sparse: true, 
     unique: true,
     trim: true,
     lowercase: true,

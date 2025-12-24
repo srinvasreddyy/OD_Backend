@@ -197,3 +197,58 @@ export const loginSuperAdmin = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * @description Authenticates a delivery partner using email (username) and password.
+ * @route POST /api/auth/delivery-partner/login
+ * @access Public
+ */
+export const loginDeliveryPartner = async (req, res, next) => {
+  try {
+    const { username, password } = req.body; 
+    // The frontend sends 'username', which we map to 'email' for the lookup
+    const email = username; 
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required." });
+    }
+
+    // Find user with type 'delivery_partner' and include the password field
+    const user = await User.findOne({ email, userType: 'delivery_partner' }).select('+password');
+
+    if (!user) {
+      return res.status(401).json({ message: "Invalid credentials or not a delivery partner." });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid credentials." });
+    }
+
+    // Generate Token
+    const token = generateJWT(user);
+
+    // Set Cookie
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: config.nodeEnv === "production",
+      sameSite: "Strict",
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Login successful.",
+      data: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        userType: user.userType
+      }
+    });
+
+  } catch (error) {
+    logger.error("Delivery partner login failed", { error: error.message });
+    next(error);
+  }
+};

@@ -57,7 +57,6 @@ const handleCheckoutSessionCompleted = async (session) => {
             if (deliveryFee === -1) throw new Error("Delivery address is out of range.");
 
             // We don't need to re-validate promo code as it was part of the initial price calculation
-            // This part is simplified; a robust system might store applied promo in metadata
             const { pricing, appliedOffer } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
 
             const backendAmount = Math.round(pricing.totalAmount * 100);
@@ -90,16 +89,14 @@ const handleCheckoutSessionCompleted = async (session) => {
         });
     } catch (error) {
         logger.error('Error processing checkout.session.completed webhook', { error: error.message, sessionId });
-        // If an error occurs, the webhook should ideally be retried by Stripe.
-        // We throw the error to signal failure to Stripe.
         throw error; 
     } finally {
         dbMongoSession.endSession();
     }
 };
 
-
-export const stripeWebhookHandler = async (req, res) => {
+// Renamed to 'handleStripeWebhook' to match index.js usage
+const handleStripeWebhook = async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const stripe = new Stripe(config.stripe.secretKey);
     let event;
@@ -128,3 +125,6 @@ export const stripeWebhookHandler = async (req, res) => {
 
     res.status(200).json({ received: true });
 };
+
+// Added default export
+export default { handleStripeWebhook };

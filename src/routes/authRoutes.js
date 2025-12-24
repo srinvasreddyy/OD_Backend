@@ -4,7 +4,8 @@ import {
   registerUser,
   requestOTP,
   verifyOTP,
-  loginSuperAdmin, // <-- NEW IMPORT
+  loginSuperAdmin,
+  loginDeliveryPartner // <-- Added this import
 } from "../controllers/authController.js";
 import {
   requestOwnerOTP,
@@ -19,6 +20,9 @@ const router = express.Router();
 router.post("/register", registerUser);
 router.post("/request-otp", requestOTP);
 router.post("/verify-otp", verifyOTP);
+
+// --- Delivery Partner Route ---
+router.post("/delivery-partner/login", loginDeliveryPartner); // <-- Added this route
 
 // --- Super Admin Login Route ---
 router.post("/admin/login", loginSuperAdmin);

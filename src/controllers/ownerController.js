@@ -11,26 +11,30 @@ import logger from "../utils/logger.js";
  */
 export const createDeliveryPartner = async (req, res, next) => {
     const  restaurantId  = req.restaurant?._id;
-    const { fullName, email, phoneNumber, deliveryPartnerProfile } = req.body;
+    // UPDATED: Destructure username and password instead of email
+    const { fullName, username, password, phoneNumber, deliveryPartnerProfile } = req.body;
     const session = await mongoose.startSession();
 
     try {
-        if (!fullName || !email || !phoneNumber) {
-            return res.status(400).json({ success: false, message: "Full name, email, and phone number are required." });
+        // UPDATED: Validation for username and password
+        if (!fullName || !username || !password || !phoneNumber) {
+            return res.status(400).json({ success: false, message: "Full name, username, password, and phone number are required." });
         }
         
         let newPartner;
         await session.withTransaction(async () => {
-            const existingUser = await User.findOne({ email }).session(session);
+            // UPDATED: Check for existing username instead of email
+            const existingUser = await User.findOne({ username }).session(session);
             if (existingUser) {
-                const err = new Error("A user with this email already exists.");
+                const err = new Error("A user with this username already exists.");
                 err.statusCode = 409;
                 throw err;
             }
 
             const partner = new User({
                 fullName,
-                email,
+                username, // Set username
+                password, // Set password (will be hashed by User model pre-save)
                 phoneNumber,
                 userType: 'delivery_partner',
                 restaurantId, // Link user to the restaurant
@@ -52,11 +56,12 @@ export const createDeliveryPartner = async (req, res, next) => {
 
         // Exclude sensitive info from the response
         const responsePartner = newPartner.toObject();
+        delete responsePartner.password; // Ensure password is not returned
         delete responsePartner.currentOTP;
 
         return res.status(201).json({
             success: true,
-            message: "Delivery partner created successfully. They can now log in using the OTP flow.",
+            message: "Delivery partner created successfully.",
             data: responsePartner,
         });
 
@@ -79,7 +84,8 @@ export const getDeliveryPartners = async (req, res, next) => {
         const restaurant = await Restaurant.findById(restaurantId)
             .populate({
                 path: 'deliveryPartners',
-                select: 'fullName email phoneNumber deliveryPartnerProfile isActive'
+                // UPDATED: Select username instead of email
+                select: 'fullName username phoneNumber deliveryPartnerProfile isActive'
             })
             .lean();
 
@@ -121,14 +127,12 @@ export const deleteDeliveryPartner = async (req, res, next) => {
             );
 
             // 2. Check and Delete the User document
-            // Ensure we only delete a partner belonging to this restaurant to prevent unauthorized deletions
             const partner = await User.findOneAndDelete(
                 { _id: partnerId, restaurantId, userType: 'delivery_partner' },
                 { session }
             );
 
             if (!partner) {
-                // If partner wasn't found/deleted, throw specific error (will be caught below)
                 const error = new Error("Delivery partner not found or not associated with your restaurant.");
                 error.statusCode = 404;
                 throw error;
@@ -164,7 +168,7 @@ export const updateDeliveryPartner = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Invalid partner ID format." });
         }
 
-        // We do NOT include 'email' in the update object to prevent it from being changed.
+        // We do NOT include 'username' or 'password' here to keep it simple.
         const updateData = {};
         if (fullName) updateData.fullName = fullName;
         if (phoneNumber) updateData.phoneNumber = phoneNumber;
@@ -179,7 +183,6 @@ export const updateDeliveryPartner = async (req, res, next) => {
             }
         }
 
-        // Find the user and ensure they belong to this restaurant before updating
         const updatedPartner = await User.findOneAndUpdate(
             { _id: partnerId, restaurantId, userType: 'delivery_partner' },
             { $set: updateData },
