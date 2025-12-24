@@ -241,8 +241,9 @@ export const assignDeliveryPartner = async (req, res, next) => {
 
         const orderId = req.params?.orderId;
         const deliveryPartnerId = req.body?.deliveryPartnerId;
-        const restaurantId = req.restaurant?._id
-        const restaurantPartnerList = req.restaurant?.deliveryPartners
+        const restaurantId = req.restaurant?._id;
+        // Use loose check for array existence
+        const restaurantPartnerList = req.restaurant?.deliveryPartners || [];
 
         if (!mongoose.Types.ObjectId.isValid(deliveryPartnerId)) {
             return res.status(400).json({ success: false, message: "Invalid delivery partner ID format." });
@@ -259,7 +260,11 @@ export const assignDeliveryPartner = async (req, res, next) => {
         if (order.acceptanceStatus !== 'accepted') {
             return res.status(400).json({ success: false, message: "Cannot assign delivery partner to an order that has not been accepted." });
         }
+        if (order.status === 'out_for_delivery' || order.status === 'delivered') {
+             return res.status(400).json({ success: false, message: "This order has already been assigned or delivered." });
+        }
 
+        // Verify the partner is associated with this restaurant
         const isAssociated = restaurantPartnerList.some(id => id.toString() === deliveryPartnerId);
         if (!isAssociated) {
             return res.status(403).json({ success: false, message: "This delivery partner is not associated with your restaurant." });
@@ -269,6 +274,8 @@ export const assignDeliveryPartner = async (req, res, next) => {
         if (!deliveryPartner) {
             return res.status(404).json({ success: false, message: "Delivery partner not found." });
         }
+        
+        // Strict availability check. 
         if (!deliveryPartner.deliveryPartnerProfile?.isAvailable) {
             return res.status(409).json({ success: false, message: "This delivery partner is currently unavailable for new orders." });
         }
@@ -276,6 +283,7 @@ export const assignDeliveryPartner = async (req, res, next) => {
         order.assignedDeliveryPartnerId = deliveryPartnerId;
         order.status = 'out_for_delivery';
         
+        // Mark partner as busy
         deliveryPartner.deliveryPartnerProfile.isAvailable = false;
 
         await order.save({ session });
@@ -336,7 +344,7 @@ export const updateOrderStatus = async (req, res, next) => {
 
         const allowedTransitions = {
             'placed': ['out_for_delivery', 'cancelled'],
-            'out_for_delivery': ['delivered'],
+            'out_for_delivery': ['delivered', 'cancelled'],
             'delivered': [],
             'cancelled': [],
         };

@@ -3,12 +3,12 @@ import {
     getUserOrders,
     getOrderDetails,
     cancelOrder,
-    placeCashOrder, // <-- NEW IMPORT
+    placeCashOrder,
     getRestaurantOrders,
     getNewRestaurantOrders,
     respondToOrder,
     updateOrderStatus,
-    assignDeliveryPartner,
+    assignDeliveryPartner, // <-- Confirmed import
     getRestaurantStats,
     getRestaurantSalesReport,
     getRestaurantOrdersReport,
@@ -29,11 +29,11 @@ router.get('/restaurant', validateRestaurant, getRestaurantOrders);
 router.get('/restaurant/:orderId', validateRestaurant, getOrderDetails); 
 router.patch('/:orderId/respond', validateRestaurant, respondToOrder);
 router.patch('/:orderId/status', validateRestaurant, updateOrderStatus);
+// CONFIRMED ROUTE for assignment
 router.patch('/:orderId/assign-delivery', validateRestaurant, assignDeliveryPartner);
 
 
 // --- Customer-Facing Routes (Protected by validateUser) ---
-// The POST for card-based orders is handled by the Stripe webhook.
 router.post('/place-cash-order', validateUser, placeCashOrder); 
 router.get('/my-orders', validateUser, getUserOrders);
 router.get('/:orderId', validateUser, getOrderDetails); 

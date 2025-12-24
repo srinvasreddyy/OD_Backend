@@ -5,7 +5,8 @@ import {
   requestOTP,
   verifyOTP,
   loginSuperAdmin,
-  loginDeliveryPartner // <-- Added this import
+  loginDeliveryPartner,
+  getCurrentUser // <-- NEW IMPORT
 } from "../controllers/authController.js";
 import {
   requestOwnerOTP,
@@ -13,6 +14,8 @@ import {
 } from "../controllers/ownerAuthController.js";
 import { googleCallback } from "../controllers/googleAuthController.js";
 import config from "../config/env.js";
+// Import the validation middleware
+import { validateDeliveryPartner } from "../middleware/validateDeliveryPartner.js";
 
 const router = express.Router();
 
@@ -21,8 +24,10 @@ router.post("/register", registerUser);
 router.post("/request-otp", requestOTP);
 router.post("/verify-otp", verifyOTP);
 
-// --- Delivery Partner Route ---
-router.post("/delivery-partner/login", loginDeliveryPartner); // <-- Added this route
+// --- Delivery Partner Routes ---
+router.post("/delivery-partner/login", loginDeliveryPartner);
+// NEW ROUTE: This handles the fetchProfile call from the Dashboard
+router.get("/delivery-partner/me", validateDeliveryPartner, getCurrentUser); 
 
 // --- Super Admin Login Route ---
 router.post("/admin/login", loginSuperAdmin);

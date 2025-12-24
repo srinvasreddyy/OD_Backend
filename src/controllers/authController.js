@@ -1,4 +1,3 @@
-// OD_Backend/src/controllers/authController.js
 import bcrypt from "bcrypt";
 import User from "../models/User.js";
 import { generateOTP, isOTPExpired } from "../utils/OtpUtils.js";
@@ -6,6 +5,8 @@ import { generateJWT } from "../utils/JwtUtils.js";
 import { sendOTPEmail } from "../utils/MailUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
+
+// ... [Keep other functions like registerUser, requestOTP, verifyOTP, loginSuperAdmin, loginDeliveryPartner unchanged] ...
 
 /**
  * @description Registers a new user of type 'customer'.
@@ -199,22 +200,19 @@ export const loginSuperAdmin = async (req, res, next) => {
 };
 
 /**
- * @description Authenticates a delivery partner using email (username) and password.
+ * @description Authenticates a delivery partner using USERNAME and password.
  * @route POST /api/auth/delivery-partner/login
  * @access Public
  */
 export const loginDeliveryPartner = async (req, res, next) => {
   try {
     const { username, password } = req.body; 
-    // The frontend sends 'username', which we map to 'email' for the lookup
-    const email = username; 
 
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required." });
+    if (!username || !password) {
+      return res.status(400).json({ message: "Username and password are required." });
     }
 
-    // Find user with type 'delivery_partner' and include the password field
-    const user = await User.findOne({ email, userType: 'delivery_partner' }).select('+password');
+    const user = await User.findOne({ username, userType: 'delivery_partner' }).select('+password');
 
     if (!user) {
       return res.status(401).json({ message: "Invalid credentials or not a delivery partner." });
@@ -242,7 +240,7 @@ export const loginDeliveryPartner = async (req, res, next) => {
       data: {
         _id: user._id,
         fullName: user.fullName,
-        email: user.email,
+        username: user.username,
         userType: user.userType
       }
     });
@@ -251,4 +249,29 @@ export const loginDeliveryPartner = async (req, res, next) => {
     logger.error("Delivery partner login failed", { error: error.message });
     next(error);
   }
+};
+
+/**
+ * @description Gets the current logged-in user's profile.
+ * @route GET /api/auth/delivery-partner/me
+ * @access Private
+ */
+export const getCurrentUser = async (req, res, next) => {
+    try {
+        const userId = req.user._id;
+        // FIX: Populate restaurantId to get restaurantName
+        const user = await User.findById(userId).populate('restaurantId', 'restaurantName');
+        
+        if (!user) {
+            return res.status(404).json({ success: false, message: "User not found." });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: user
+        });
+    } catch (error) {
+        logger.error("Get current user failed", { error: error.message });
+        next(error);
+    }
 };

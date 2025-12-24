@@ -4,7 +4,7 @@ import mongoose from "mongoose";
 import bcrypt from 'bcrypt';
 
 const addressSchema = new mongoose.Schema({
-  _id: false, // Prevent Mongoose from adding unnecessary _id to subdocuments
+  _id: false, 
   addressId: String,
   addressType: { type: String, enum: ['home', 'work', 'other'] },
   fullAddress: String,
@@ -60,7 +60,7 @@ const userSchema = new mongoose.Schema({
     type: String
   },
   phoneNumber: String,
-  // NEW: Added username field
+  // Ensure username is present
   username: {
     type: String,
     unique: true,
@@ -69,8 +69,7 @@ const userSchema = new mongoose.Schema({
   },
   email: {
     type: String,
-    // REMOVED: required: true, 
-    // ADDED: sparse: true to allow users without email (delivery partners)
+    // sparse: true allows multiple users to have 'null' email (important for delivery partners)
     sparse: true, 
     unique: true,
     trim: true,
@@ -105,7 +104,6 @@ const userSchema = new mongoose.Schema({
     vehicleNumber: String,
     isAvailable: Boolean,
     rating: Number
-    // The `currentLocation` field has been removed.
   },
   restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" },
   isActive: { type: Boolean, default: true }
@@ -114,7 +112,6 @@ const userSchema = new mongoose.Schema({
 userSchema.index({ "foodCart.cartItemKey": 1 });
 userSchema.index({ "groceriesCart.cartItemKey": 1 });
 
-// --- Password hashing middleware ---
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password') || !this.password) {
     return next();
