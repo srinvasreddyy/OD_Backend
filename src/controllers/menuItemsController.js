@@ -6,6 +6,7 @@ import Category from "../models/Category.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
 import logger from "../utils/logger.js";
 import { getPaginationParams } from "../utils/paginationUtils.js";
+
 // A custom error class for creating predictable, handled errors.
 class ApiError extends Error {
   constructor(statusCode, message) {
@@ -48,7 +49,6 @@ const handleImageUploads = async (files) => {
   };
 };
 
-
 // --- Write/Modify Controllers ---
 
 export const addMenuItem = async (req, res, next) => {
@@ -66,7 +66,7 @@ export const addMenuItem = async (req, res, next) => {
     let newMenuItem;
 
     await session.withTransaction(async () => {
-      const isFoodBool = isFood === 'true';
+      const isFoodBool = isFood === 'true' || isFood === true;
 
       const [restaurant, existingItem] = await Promise.all([
         Restaurant.findById(restaurantId).session(session).lean(),
@@ -94,7 +94,7 @@ export const addMenuItem = async (req, res, next) => {
       const menuItemData = new MenuItem({
         restaurantId, itemName, description, isFood: isFoodBool,
         itemType, basePrice: parsedBasePrice, packageType,
-        minimumQuantity, maximumQuantity, variantGroups, addonGroups, isBestseller,
+        minimumQuantity, maximumQuantity, variantGroups, addonGroups, isBestseller: (isBestseller === 'true' || isBestseller === true),
         displayImageUrl: displayImage?.url, 
         displayImagePublicId: displayImage?.public_id,
         imageUrls: galleryImages.map(img => img.url),
@@ -140,11 +140,23 @@ export const updateMenuItem = async (req, res, next) => {
       const updates = {};
       const body = req.body;
 
-      const simpleFields = ['description', 'packageType', 'isBestseller', 'isAvailable'];
+      // --- FIX: Added itemName, isFood, itemType, and quantities to allowed updates ---
+      const simpleFields = [
+        'itemName', 
+        'description', 
+        'itemType', 
+        'packageType', 
+        'isBestseller', 
+        'isAvailable', 
+        'isFood', 
+        'minimumQuantity', 
+        'maximumQuantity'
+      ];
+
       simpleFields.forEach(field => {
           if (body[field] !== undefined) {
-              const isBooleanField = ['isBestseller', 'isAvailable'].includes(field);
-              // FIX: Handle both boolean values and string values "true"/"false"
+              const isBooleanField = ['isBestseller', 'isAvailable', 'isFood'].includes(field);
+              // Handle both boolean types and string representations from FormData
               if (isBooleanField) {
                   updates[field] = (body[field] === true || body[field] === 'true');
               } else {
@@ -160,7 +172,6 @@ export const updateMenuItem = async (req, res, next) => {
       const parseJsonField = (jsonString, fieldName) => {
           if (!jsonString) return undefined;
           try {
-              // Handle if it's already an object (from JSON body) vs string (from FormData)
               return typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
           } catch (e) {
               throw new ApiError(400, `Invalid JSON format for field: '${fieldName}'.`);
@@ -192,7 +203,9 @@ export const updateMenuItem = async (req, res, next) => {
       }
       
       if (Object.keys(updates).length === 0 && !req.files) {
-          throw new ApiError(400, "No fields to update were provided.");
+          // If no updates were prepared, we don't throw error, just return current item to avoid frontend confusion
+          // But throwing error helps debugging. Let's keep it but ensure frontend sends data.
+          // For now, let's allow "no-op" saves to just return success.
       }
 
       Object.assign(menuItem, updates);
@@ -243,7 +256,6 @@ export const deleteMenuItem = async (req, res, next) => {
     }
 };
 
-
 export const getAllMenuItems = async (req, res, next) => {
     try {
         const { page, limit, skip } = getPaginationParams(req.query);
@@ -290,7 +302,6 @@ export const getMenuByRestaurantId = async (req, res, next) => {
         const { isAvailable } = req.query;
         const { page, limit, skip } = getPaginationParams(req.query);
         
-
         if (!mongoose.Types.ObjectId.isValid(restaurantId)) {
             return res.status(400).json({ success: false, message: "Invalid restaurant ID format." });
         }
