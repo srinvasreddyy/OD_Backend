@@ -1,19 +1,20 @@
 import mongoose from "mongoose";
 import Restaurant from "../models/Restaurant.js";
 import RestaurantDocuments from "../models/RestaurantDocuments.js";
-import MenuItem from "../models/MenuItem.js"; // <-- Imported
-import Category from "../models/Category.js"; // <-- Imported
+import MenuItem from "../models/MenuItem.js"; 
+import Category from "../models/Category.js"; 
 import { getPaginationParams } from "../utils/paginationUtils.js";
 import logger from "../utils/logger.js";
+import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js"; 
 
 /**
- * @description Get a paginated list of all active and APPROVED restaurants.
+ * @description Get a paginated list of all active and APPROVED restaurants with Distance calculation.
  * @route GET /api/restaurants
  * @access Public
  */
 export const getRestaurants = async (req, res, next) => {
     try {
-        const { type, search, dishSearch, acceptsDining } = req.query;
+        const { type, search, dishSearch, acceptsDining, lat, lng } = req.query;
         const { page, limit, skip } = getPaginationParams(req.query); 
 
         const pipeline = [];
@@ -92,9 +93,44 @@ export const getRestaurants = async (req, res, next) => {
 
         const restaurants = await Restaurant.aggregate(pipeline);
 
+        // --- DISTANCE CALCULATION LOGIC ---
+        // Ensure inputs are parsed as floats to maintain high precision
+        const userLat = parseFloat(lat);
+        const userLng = parseFloat(lng);
+        const hasLocation = !isNaN(userLat) && !isNaN(userLng);
+
+        const processedRestaurants = restaurants.map(rest => {
+            let distanceMiles = null;
+            let isDeliverable = true; // Default true if no location provided (fallback)
+
+            if (hasLocation && rest.address?.coordinates?.coordinates) {
+                // MongoDB GeoJSON is [lng, lat]
+                const [restLng, restLat] = rest.address.coordinates.coordinates;
+                
+                // Calculate using full precision inputs
+                distanceMiles = getDistanceFromLatLonInMiles(userLat, userLng, restLat, restLng);
+                
+                // Round only for the final display value
+                distanceMiles = parseFloat(distanceMiles.toFixed(2)); 
+
+                const maxRadius = rest.deliverySettings?.maxDeliveryRadius || 0;
+                
+                // Determine if deliverable based on radius
+                if (distanceMiles > maxRadius) {
+                    isDeliverable = false;
+                }
+            }
+
+            return {
+                ...rest,
+                distanceMiles,
+                isDeliverable
+            };
+        });
+
         return res.status(200).json({
             success: true,
-            data: restaurants,
+            data: processedRestaurants,
             totalPages: Math.ceil(count / limit),
             currentPage: page,
         });
@@ -104,12 +140,6 @@ export const getRestaurants = async (req, res, next) => {
     }
 };
 
-
-/**
- * @description Get public details for a single approved and active restaurant.
- * @route GET /api/restaurants/:id
- * @access Public
- */
 export const getRestaurantById = async (req, res, next) => {
     try {
         const { id } = req.params; 
@@ -136,11 +166,6 @@ export const getRestaurantById = async (req, res, next) => {
     }
 };
 
-/**
- * @description Allows a restaurant owner to update their profile details.
- * @route PUT /api/restaurants/profile
- * @access Private (Restaurant Owner)
- */
 export const updateRestaurantProfile = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
@@ -176,11 +201,6 @@ export const updateRestaurantProfile = async (req, res, next) => {
     }
 };
 
-/**
- * @description Allows a restaurant owner to update their financial and delivery settings.
- * @route PUT /api/restaurants/settings
- * @access Private (Restaurant Owner)
- */
 export const updateRestaurantSettings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
@@ -230,11 +250,6 @@ export const updateRestaurantSettings = async (req, res, next) => {
     }
 };
 
-/**
- * @description Toggles the operational status of a restaurant (active/inactive).
- * @route PATCH /api/restaurants/toggle-status
- * @access Private (Restaurant Owner)
- */
 export const toggleRestaurantStatus = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
