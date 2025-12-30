@@ -151,6 +151,5 @@ export const sendRejectionEmail = async (email, restaurantName, reason) => {
     logger.info(`Rejection email sent to ${email}`);
   } catch (error) {
     logger.error('Failed to send rejection email', { email, error: error.message });
-    // We don't throw here to ensure the deletion process in the controller continues
   }
 };
