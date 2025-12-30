@@ -15,22 +15,28 @@ import logger from "../utils/logger.js";
  * @access Private (User)
  */
 export const placeCashOrder = async (req, res, next) => {
-    const { cartType, deliveryAddress, notes } = req.body;
+    // 1. Extract orderType and correct address fields
+    const { cartType, deliveryAddress, notes, orderType } = req.body;
     const userId = req.user?._id;
 
     const dbSession = await mongoose.startSession();
     try {
         let newOrder;
         await dbSession.withTransaction(async () => {
-            // 1. Basic Input Validation
+            // 2. Basic Input Validation
             if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
                 throw { statusCode: 400, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." };
             }
-            if (!deliveryAddress || !deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates) {
-                throw { statusCode: 400, message: "A valid delivery address is required." };
+            
+            // Validate Order Type (Default to delivery if missing)
+            const validOrderType = ['delivery', 'pickup'].includes(orderType) ? orderType : 'delivery';
+
+            // Validate Address (Required for Delivery, Optional structure for Pickup but we expect payload)
+            if (!deliveryAddress) {
+                throw { statusCode: 400, message: "Delivery address details are required." };
             }
 
-            // 2. Fetch User and Cart
+            // 3. Fetch User and Cart
             const user = await User.findById(userId).populate(`${cartType}.menuItemId`).session(dbSession);
             if (!user) throw { statusCode: 404, message: "User not found." };
             
@@ -38,9 +44,10 @@ export const placeCashOrder = async (req, res, next) => {
             const { error: cartError, restaurantId } = validateCart(cart);
             if (cartError) throw { statusCode: 400, message: cartError };
 
-            // 3. Fetch Restaurant and Check COD Availability
+            // 4. Fetch Restaurant and Check COD Availability
             const restaurant = await Restaurant.findById(restaurantId).session(dbSession).lean();
             if (!restaurant) throw { statusCode: 404, message: `Restaurant with ID ${restaurantId} not found.` };
+            
             if (!restaurant.acceptsCashOnDelivery) {
                 throw { statusCode: 400, message: "This restaurant does not accept Cash on Delivery." };
             }
@@ -48,37 +55,57 @@ export const placeCashOrder = async (req, res, next) => {
                  throw { statusCode: 400, message: "This restaurant is currently not accepting orders." };
             }
 
-            // 4. Process items and calculate pricing
+            // 5. Process items
             const processedItems = await processOrderItems(cart);
             
-            const [restLon, restLat] = restaurant.address.coordinates.coordinates;
-            const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
-            const deliveryFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
-            if (deliveryFee === -1) {
-                throw { statusCode: 400, message: "Delivery address is out of the restaurant's range." };
+            // 6. Calculate Delivery Fee (Skip for Pickup)
+            let deliveryFee = 0;
+
+            if (validOrderType === 'delivery') {
+                if (!deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates) {
+                    throw { statusCode: 400, message: "Valid coordinates are required for delivery." };
+                }
+
+                const [restLon, restLat] = restaurant.address.coordinates.coordinates;
+                const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
+                
+                const calculatedFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
+                
+                if (calculatedFee === -1) {
+                    throw { statusCode: 400, message: "Delivery address is out of the restaurant's delivery range." };
+                }
+                deliveryFee = calculatedFee;
             }
 
+            // Calculate Final Pricing
             const { pricing } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
 
-            // 5. Create and Save the Order
+            // 7. Format Address for Schema (Map addressLine1 -> fullAddress)
+            const formattedAddress = {
+                fullAddress: deliveryAddress.addressLine1 || deliveryAddress.fullAddress || "Self Pickup",
+                landmark: deliveryAddress.landmark || "",
+                coordinates: deliveryAddress.coordinates || { type: 'Point', coordinates: [0, 0] }
+            };
+
+            // 8. Create and Save the Order
             const orderData = new Order({
                 orderNumber: generateUniqueOrderNumber(),
                 restaurantId,
                 customerId: userId,
                 customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
-                orderType: 'delivery',
-                deliveryAddress,
+                orderType: validOrderType, // Use the extracted type
+                deliveryAddress: formattedAddress, // Use formatted address
                 orderedItems: processedItems,
                 pricing,
                 paymentType: 'cash',
-                paymentStatus: 'pending', // Will be marked 'paid' by delivery partner
+                paymentStatus: 'pending',
                 acceptanceStatus: 'pending',
                 notes: notes || '',
             });
 
             const savedOrder = await orderData.save({ session: dbSession });
             
-            // 6. Clear the user's cart
+            // 9. Clear the user's cart
             user[cartType] = [];
             await user.save({ session: dbSession });
 
@@ -88,11 +115,16 @@ export const placeCashOrder = async (req, res, next) => {
         return res.status(201).json({ success: true, message: "Order placed successfully!", data: newOrder });
         
     } catch (error) {
-        await dbSession.abortTransaction();
+        // If the error comes from transaction abort, session might already be ended, 
+        // but we wrap in try-catch to be safe or just use endSession in finally.
+        if (dbSession.inTransaction()) {
+             await dbSession.abortTransaction();
+        }
+        
         logger.error("Error placing cash order", { error: error.message, statusCode: error.statusCode, userId });
         res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred while placing the order." });
     } finally {
-        dbSession.endSession();
+        await dbSession.endSession();
     }
 };
 
@@ -179,7 +211,9 @@ export const cancelOrder = async (req, res, next) => {
 
         return res.status(200).json({ success: true, message: "Order has been cancelled successfully.", data: cancelledOrder });
     } catch (error) {
-        await session.abortTransaction();
+        if (session.inTransaction()) {
+             await session.abortTransaction();
+        }
         logger.error("Error cancelling order", { error: error.message, statusCode: error.statusCode });
         res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred." });
     } finally {

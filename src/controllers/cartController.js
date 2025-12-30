@@ -6,7 +6,7 @@ import MenuItem from '../models/MenuItem.js';
 import Restaurant from "../models/Restaurant.js";
 import Announcement from "../models/Announcements.js";
 import logger from "../utils/logger.js";
-import { calculateOrderPricing, processOrderItems } from "../utils/orderCalculation.js";
+import { calculateOrderPricing, processOrderItems, calculateDeliveryFee } from "../utils/orderCalculation.js";
 
 // --- Helper Functions ---
 
@@ -72,7 +72,6 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
     };
 };
 
-// --- NEW HELPER ---
 const clearAppliedPromo = (user) => {
     if (user.customerProfile?.appliedPromo?.code) {
         user.customerProfile.appliedPromo = undefined;
@@ -100,7 +99,7 @@ export const addItemToCart = async (req, res, next) => {
         if (existingCart.length > 0 && existingCart[0].menuItemId) {
             const cartRestaurantId = existingCart[0].menuItemId.restaurantId.toString();
             if (cartRestaurantId !== restaurantId) {
-                clearAppliedPromo(user); // NEW: Clear promo if restaurant changes
+                clearAppliedPromo(user); 
                 return res.status(409).json({ message: "Your cart contains items from another restaurant. Please clear your cart to add items from this restaurant." });
             }
         }
@@ -177,7 +176,7 @@ export const getCart = async (req, res, next) => {
 export const getCartSummary = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        const { cartType } = req.query;
+        const { cartType, lat, lng, mode } = req.query; // Added mode for pickup
 
         if (!['foodCart', 'groceriesCart'].includes(cartType)) {
             return res.status(400).json({ message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
@@ -188,7 +187,7 @@ export const getCartSummary = async (req, res, next) => {
 
         const cart = user[cartType];
         if (cart.length === 0) {
-            clearAppliedPromo(user); // Ensure promo is cleared if cart is emptied
+            clearAppliedPromo(user); 
             await user.save();
             return res.status(200).json({ success: true, data: { itemCount: 0, subtotal: 0, handlingCharge: 0, deliveryFee: null, totalAmount: 0 } });
         }
@@ -199,9 +198,8 @@ export const getCartSummary = async (req, res, next) => {
         
         const processedItems = await processOrderItems(cart);
         
-        // --- NEW: Check for and validate applied promo ---
+        // --- Promo Logic ---
         let offerDetails = null;
-        let appliedOfferData = null;
         const appliedPromo = user.customerProfile?.appliedPromo;
 
         if (appliedPromo?.code && appliedPromo.cartType === cartType) {
@@ -214,15 +212,30 @@ export const getCartSummary = async (req, res, next) => {
             if (offer && offer.restaurantId.toString() === restaurant._id.toString()) {
                 offerDetails = offer.offerDetails;
             } else {
-                // Invalid promo found, clear it
                 clearAppliedPromo(user);
                 await user.save();
             }
         }
-        // --- END NEW ---
         
-        // Delivery fee is not included here as it requires an address
-        const { pricing, appliedOffer } = calculateOrderPricing(processedItems, 0, restaurant, offerDetails);
+        // --- Calculate Delivery Fee ---
+        let calculatedDeliveryFee = 0;
+        let deliveryError = null;
+
+        if (mode === 'pickup') {
+            calculatedDeliveryFee = 0; // Free for pickup
+        } else if (lat && lng) {
+            const [restLon, restLat] = restaurant.address.coordinates.coordinates;
+            const fee = calculateDeliveryFee(restLat, restLon, parseFloat(lat), parseFloat(lng), restaurant.deliverySettings);
+            
+            if (fee === -1) {
+                deliveryError = "Out of delivery range";
+                calculatedDeliveryFee = 0; 
+            } else {
+                calculatedDeliveryFee = fee;
+            }
+        }
+
+        const { pricing, appliedOffer } = calculateOrderPricing(processedItems, calculatedDeliveryFee, restaurant, offerDetails);
         const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
         return res.status(200).json({ 
@@ -233,7 +246,8 @@ export const getCartSummary = async (req, res, next) => {
                 handlingCharge: pricing.handlingCharge,
                 discountAmount: pricing.discountAmount,
                 appliedOffer: appliedOffer,
-                deliveryFee: null, // Delivery fee requires address, cannot be calculated here
+                deliveryFee: calculatedDeliveryFee, 
+                deliveryError: deliveryError,
                 totalAmount: pricing.totalAmount,
             } 
         });
@@ -256,7 +270,6 @@ export const updateItemQuantity = async (req, res, next) => {
         }
 
         if (quantity === 0) {
-            // Forward to removeItemFromCart logic
             return removeItemFromCart(req, res, next);
         }
 
@@ -339,7 +352,7 @@ export const clearCart = async (req, res, next) => {
         }
         
         user[cartType] = [];
-        clearAppliedPromo(user); // Also clear the promo
+        clearAppliedPromo(user); 
         await user.save();
 
         return res.status(200).json({ message: `Your ${cartType} has been cleared.` });

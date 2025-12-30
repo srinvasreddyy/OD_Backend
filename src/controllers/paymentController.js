@@ -6,7 +6,8 @@ import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
-const calculateDeliveryFee = (distance, settings) => {
+const calculateDeliveryFee = (distance, settings, mode) => {
+    if (mode === 'pickup') return 0; // No fee for pickup
     if (distance > settings.maxDeliveryRadius) {
         return -1; 
     }
@@ -48,13 +49,17 @@ const processCartForCheckout = (cart, restaurant) => {
 export const createOrderCheckoutSession = async (req, res, next) => {
     try {
         const userId = req.user._id;
-        const { cartType, deliveryAddress } = req.body; 
+        const { cartType, deliveryAddress, orderType } = req.body; 
 
         if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
             return res.status(400).json({ success: false, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
-        if (!deliveryAddress || !deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates) {
-             return res.status(400).json({ success: false, message: "Delivery address with coordinates is required to create a checkout session." });
+        
+        const isPickup = orderType === 'pickup';
+        
+        // Validation: Address is needed for delivery, optional for pickup but schema expects structure
+        if (!isPickup && (!deliveryAddress || !deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates)) {
+             return res.status(400).json({ success: false, message: "Delivery address with coordinates is required." });
         }
         
         const cartField = cartType;
@@ -77,13 +82,19 @@ export const createOrderCheckoutSession = async (req, res, next) => {
 
         const { subtotal, handlingCharge } = processCartForCheckout(cart, restaurant);
         
-        const [restaurantLon, restaurantLat] = restaurant.address.coordinates.coordinates;
-        const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
-        const distance = getDistanceFromLatLonInMiles(restaurantLat, restaurantLon, userLat, userLon);
-        const deliveryFee = calculateDeliveryFee(distance, restaurant.deliverySettings);
+        let deliveryFee = 0;
 
-        if (deliveryFee === -1) {
-            return res.status(400).json({ success: false, message: `Sorry, this address is outside the restaurant's delivery radius of ${restaurant.deliverySettings.maxDeliveryRadius} miles.` });
+        if (isPickup) {
+            deliveryFee = 0;
+        } else {
+            const [restaurantLon, restaurantLat] = restaurant.address.coordinates.coordinates;
+            const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
+            const distance = getDistanceFromLatLonInMiles(restaurantLat, restaurantLon, userLat, userLon);
+            deliveryFee = calculateDeliveryFee(distance, restaurant.deliverySettings, 'delivery');
+
+            if (deliveryFee === -1) {
+                return res.status(400).json({ success: false, message: `Sorry, this address is outside the restaurant's delivery radius of ${restaurant.deliverySettings.maxDeliveryRadius} miles.` });
+            }
         }
 
         const totalAmount = subtotal + handlingCharge + deliveryFee;
@@ -98,8 +109,8 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             price_data: {
                 currency: "gbp", 
                 product_data: {
-                    name: `Order from ${restaurant.restaurantName}`,
-                    description: `Includes items, handling charges, and delivery.`
+                    name: `Order from ${restaurant.restaurantName} (${isPickup ? 'Self Pickup' : 'Delivery'})`,
+                    description: `Includes items, handling charges${isPickup ? '' : ', and delivery fee'}.`
                 },
                 unit_amount: Math.round(totalAmount * 100),
             },
@@ -120,7 +131,8 @@ export const createOrderCheckoutSession = async (req, res, next) => {
                 cartType: cartField,
                 restaurantId: restaurantId.toString(),
                 idempotencyKey,
-                deliveryAddress: JSON.stringify(deliveryAddress), 
+                deliveryAddress: JSON.stringify(deliveryAddress || {}), 
+                orderType: isPickup ? 'pickup' : 'delivery' // Store order type in metadata
             }
         });
 
