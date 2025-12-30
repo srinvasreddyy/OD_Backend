@@ -2,23 +2,58 @@ import mongoose from "mongoose";
 import Table from "../models/Table.js";
 import logger from "../utils/logger.js";
 
+// Helper to generate hourly slots
+const generateSlots = (start, end) => {
+    const slots = [];
+    const [startH] = start.split(':').map(Number);
+    const [endH] = end.split(':').map(Number);
+    
+    for (let h = startH; h < endH; h++) {
+        slots.push(`${String(h).padStart(2, '0')}:00`);
+    }
+    return slots;
+};
+
 /**
- * @description Creates a new dining table for the owner's restaurant.
- * @route POST /api/tables
- * @access Private (Restaurant Owner)
+ * @description Creates a table availability for a specific date.
  */
 export const addTable = async (req, res, next) => {
   try {
     const restaurantId = req.restaurant._id;
-    const { tableNumber, capacity, area } = req.body;
+    const { tableNumber, capacity, area, date, startTime, endTime, bookingPrice, maxBookingHours } = req.body;
 
-    if (!tableNumber || !capacity) {
-      return res.status(400).json({ success: false, message: "Table number and capacity are required." });
+    if (!tableNumber || !capacity || !date || !startTime || !endTime) {
+      return res.status(400).json({ success: false, message: "All fields including Date and Time Range are required." });
     }
 
-    const existingTable = await Table.findOne({ restaurantId, tableNumber });
+    // FIX: Strict UTC Date Construction
+    const tableDate = new Date(date);
+    tableDate.setUTCHours(0, 0, 0, 0); // Force UTC Midnight
+
+    // Validation
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    
+    const maxDate = new Date(today);
+    maxDate.setDate(today.getDate() + 7);
+
+    if (tableDate < today) {
+         return res.status(400).json({ success: false, message: "Cannot add tables for past dates." });
+    }
+    if (tableDate > maxDate) {
+         return res.status(400).json({ success: false, message: "Can only add tables up to 7 days in advance." });
+    }
+
+    // Generate Slots
+    const availableHours = generateSlots(startTime, endTime);
+    if (availableHours.length === 0) {
+        return res.status(400).json({ success: false, message: "Invalid time range. End time must be after start time." });
+    }
+
+    // Check Uniqueness
+    const existingTable = await Table.findOne({ restaurantId, tableNumber, date: tableDate });
     if (existingTable) {
-      return res.status(409).json({ success: false, message: `A table with number '${tableNumber}' already exists.` });
+      return res.status(409).json({ success: false, message: `Table ${tableNumber} already exists for ${date}.` });
     }
 
     const newTable = new Table({
@@ -26,13 +61,17 @@ export const addTable = async (req, res, next) => {
       tableNumber,
       capacity,
       area,
+      date: tableDate,
+      availableHours,
+      bookingPrice: Number(bookingPrice) || 0,
+      maxBookingHours: Number(maxBookingHours) || 2
     });
 
     await newTable.save();
 
     return res.status(201).json({
       success: true,
-      message: "Table added successfully.",
+      message: "Table availability created successfully.",
       data: newTable,
     });
   } catch (error) {
@@ -45,14 +84,20 @@ export const addTable = async (req, res, next) => {
 };
 
 /**
- * @description Retrieves all tables for the owner's restaurant.
- * @route GET /api/tables
- * @access Private (Restaurant Owner)
+ * @description Retrieves active tables for today onwards.
  */
 export const getTables = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant._id;
-        const tables = await Table.find({ restaurantId }).sort({ tableNumber: 1 });
+        
+        // Filter: Show only tables for Today or Future
+        const today = new Date();
+        today.setUTCHours(0,0,0,0);
+
+        const tables = await Table.find({ 
+            restaurantId,
+            date: { $gte: today } 
+        }).sort({ date: 1, tableNumber: 1 });
 
         return res.status(200).json({
             success: true,
@@ -60,16 +105,11 @@ export const getTables = async (req, res, next) => {
             data: tables,
         });
     } catch (error) {
-        logger.error("Error fetching tables", { error: error.message, restaurantId: req.restaurant?._id });
+        logger.error("Error fetching tables", { error: error.message });
         next(error);
     }
 };
 
-/**
- * @description Retrieves a single table by its ID.
- * @route GET /api/tables/:tableId
- * @access Private (Restaurant Owner)
- */
 export const getTableById = async (req, res, next) => {
     try {
         const { tableId } = req.params;
@@ -80,50 +120,28 @@ export const getTableById = async (req, res, next) => {
         }
 
         const table = await Table.findOne({ _id: tableId, restaurantId });
-
-        if (!table) {
-            return res.status(404).json({ success: false, message: "Table not found or you do not have permission to view it." });
-        }
+        if (!table) return res.status(404).json({ success: false, message: "Table not found." });
 
         return res.status(200).json({ success: true, data: table });
     } catch (error) {
-        logger.error("Error fetching table by ID", { error: error.message, tableId });
         next(error);
     }
 };
 
-
-/**
- * @description Updates a dining table's information.
- * @route PUT /api/tables/:tableId
- * @access Private (Restaurant Owner)
- */
 export const updateTable = async (req, res, next) => {
   try {
     const { tableId } = req.params;
     const restaurantId = req.restaurant._id;
-    const { tableNumber, capacity, area } = req.body;
-
-    if (!mongoose.Types.ObjectId.isValid(tableId)) {
-      return res.status(400).json({ success: false, message: "Invalid table ID format." });
-    }
+    const { tableNumber, capacity, area, bookingPrice, maxBookingHours } = req.body;
 
     const table = await Table.findOne({ _id: tableId, restaurantId });
-    if (!table) {
-      return res.status(404).json({ success: false, message: "Table not found or you do not have permission to edit it." });
-    }
+    if (!table) return res.status(404).json({ success: false, message: "Table not found." });
 
-    // Check for uniqueness if table number is being changed
-    if (tableNumber && tableNumber !== table.tableNumber) {
-      const existingTable = await Table.findOne({ restaurantId, tableNumber, _id: { $ne: tableId } });
-      if (existingTable) {
-        return res.status(409).json({ success: false, message: `Another table with number '${tableNumber}' already exists.` });
-      }
-      table.tableNumber = tableNumber;
-    }
-
+    if (tableNumber) table.tableNumber = tableNumber;
     if (capacity) table.capacity = capacity;
     if (area) table.area = area;
+    if (bookingPrice !== undefined) table.bookingPrice = bookingPrice;
+    if (maxBookingHours) table.maxBookingHours = maxBookingHours;
 
     const updatedTable = await table.save();
 
@@ -133,75 +151,33 @@ export const updateTable = async (req, res, next) => {
       data: updatedTable,
     });
   } catch (error) {
-    if (error.name === 'ValidationError') {
-        return res.status(400).json({ success: false, message: error.message });
-    }
-    logger.error("Error updating table", { error: error.message, tableId: req.params.tableId });
     next(error);
   }
 };
 
-/**
- * @description Toggles the active status of a table.
- * @route PATCH /api/tables/:tableId/toggle-active
- * @access Private (Restaurant Owner)
- */
 export const toggleTableStatus = async (req, res, next) => {
     try {
         const { tableId } = req.params;
         const restaurantId = req.restaurant._id;
-
-        if (!mongoose.Types.ObjectId.isValid(tableId)) {
-            return res.status(400).json({ success: false, message: "Invalid table ID format." });
-        }
-
         const table = await Table.findOne({ _id: tableId, restaurantId });
-        if (!table) {
-            return res.status(404).json({ success: false, message: "Table not found or you do not have permission to modify it." });
-        }
+        if (!table) return res.status(404).json({ message: "Table not found" });
 
         table.isActive = !table.isActive;
         await table.save();
 
-        return res.status(200).json({
-            success: true,
-            message: `Table status updated to ${table.isActive ? 'active' : 'inactive'}.`,
-            data: table,
-        });
-
+        return res.status(200).json({ success: true, data: table });
     } catch (error) {
-        logger.error("Error toggling table status", { error: error.message, tableId });
         next(error);
     }
 };
 
-
-/**
- * @description Deletes a dining table.
- * @route DELETE /api/tables/:tableId
- * @access Private (Restaurant Owner)
- */
 export const deleteTable = async (req, res, next) => {
   try {
     const { tableId } = req.params;
     const restaurantId = req.restaurant._id;
-
-    if (!mongoose.Types.ObjectId.isValid(tableId)) {
-      return res.status(400).json({ success: false, message: "Invalid table ID format." });
-    }
-    
-    // In future, we must check if there are active bookings for this table before deleting.
-    // For now, simple deletion is sufficient for FEATURE-001.
-
-    const result = await Table.deleteOne({ _id: tableId, restaurantId });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: "Table not found or you do not have permission to delete it." });
-    }
-
+    await Table.deleteOne({ _id: tableId, restaurantId });
     return res.status(200).json({ success: true, message: "Table deleted successfully." });
   } catch (error) {
-    logger.error("Error deleting table", { error: error.message, tableId: req.params.tableId });
     next(error);
   }
 };

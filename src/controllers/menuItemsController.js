@@ -318,22 +318,24 @@ export const getMenuByRestaurantId = async (req, res, next) => {
     }
 };
 
-// UPDATED: Filter categories by food items for the "What's on your mind?" section
+// --- DYNAMIC CATEGORY FILTERING ---
 export const getAllCategories = async (req, res, next) => {
     try {
         const { onlyFood } = req.query;
         let query = { isActive: true };
 
-        // If 'onlyFood' param is present, filter categories
+        // If 'onlyFood' param is present, strictly filter categories based on item contents
         if (onlyFood !== undefined) {
              const isFoodBool = onlyFood === 'true';
              
-             // Find Categories that have at least one active item of the requested type (Food or Grocery)
+             // 1. Find all active MenuItems that match the request (Food or Grocery)
+             // 2. Extract their unique category IDs
              const distinctCategoryIds = await MenuItem.distinct('categories', { 
                  isFood: isFoodBool,
                  isAvailable: true 
              });
              
+             // 3. Filter the Categories collection to only return these IDs
              query._id = { $in: distinctCategoryIds };
         }
 

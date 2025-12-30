@@ -1,8 +1,8 @@
 import mongoose from "mongoose";
 
 /**
- * @description Represents a single dining table in a restaurant.
- * Availability and slots are determined dynamically, not stored here.
+ * @description Represents a dining table configuration for a specific date.
+ * Now acts as "Inventory" for a specific day.
  */
 const tableSchema = new mongoose.Schema({
   restaurantId: { 
@@ -24,19 +24,41 @@ const tableSchema = new mongoose.Schema({
   area: { 
     type: String, 
     trim: true, 
-    default: 'General',
-    description: "The area of the restaurant where the table is located, e.g., 'Patio', 'Rooftop', 'Main Hall'."
+    default: 'General'
+  },
+  // --- INVENTORY FIELDS ---
+  date: {
+    type: Date,
+    required: [true, "Date is required for table availability."],
+    index: true
+  },
+  availableHours: [{
+    type: String, // Format: "HH:MM" (e.g., "10:00", "11:00")
+    required: true
+  }],
+  bookingPrice: {
+    type: Number,
+    required: true,
+    default: 0,
+    min: 0,
+    description: "Flat fee for booking this table, regardless of duration."
+  },
+  maxBookingHours: {
+    type: Number,
+    required: true,
+    default: 2,
+    min: 1,
+    description: "Maximum number of sequential hours a user can book."
   },
   isActive: { 
     type: Boolean, 
-    default: true,
-    description: "Indicates if the table is currently in service and available for booking."
+    default: true
   },
 }, { 
   timestamps: true 
 });
 
-// Ensures that no two tables in the same restaurant can have the same number.
-tableSchema.index({ restaurantId: 1, tableNumber: 1 }, { unique: true });
+// Compound index: Unique table number per restaurant PER DATE.
+tableSchema.index({ restaurantId: 1, tableNumber: 1, date: 1 }, { unique: true });
 
 export default mongoose.model("Table", tableSchema);

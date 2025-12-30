@@ -22,9 +22,22 @@ export const getRestaurants = async (req, res, next) => {
         // Stage 1: Match active restaurants
         const matchStage = { isActive: true };
         
-        if (type && ['food_delivery_and_dining', 'groceries', 'food_delivery'].includes(type)) {
-            matchStage.restaurantType = type;
+        // --- UPDATED LOGIC START ---
+        if (type) {
+            if (type === 'food_delivery') {
+                // Delivery tab should show both pure delivery and dining+delivery places
+                matchStage.restaurantType = { $in: ['food_delivery', 'food_delivery_and_dining'] };
+            } else if (type === 'groceries') {
+                matchStage.restaurantType = 'groceries';
+            } else if (type === 'food_delivery_and_dining') {
+                // For dining tab, we rely more on the acceptsDining flag, but we can respect the type too
+                matchStage.restaurantType = 'food_delivery_and_dining';
+            } else {
+                // Fallback for any other specific type
+                matchStage.restaurantType = type;
+            }
         }
+        // --- UPDATED LOGIC END ---
 
         // Search by Restaurant Name (Navbar Search)
         if (search) {
@@ -53,6 +66,7 @@ export const getRestaurants = async (req, res, next) => {
             matchStage._id = { $in: restaurantIds };
         }
 
+        // Explicit Dining Filter (Used for 'Dining Out' section)
         if (acceptsDining === 'true') {
             matchStage.acceptsDining = true;
         }
@@ -116,6 +130,7 @@ export const getRestaurants = async (req, res, next) => {
                 const maxRadius = rest.deliverySettings?.maxDeliveryRadius || 0;
                 
                 // Determine if deliverable based on radius
+                // NOTE: We do NOT filter out here. We flag it so frontend can show it "half colored"
                 if (distanceMiles > maxRadius) {
                     isDeliverable = false;
                 }

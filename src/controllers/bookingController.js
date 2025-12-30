@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 import Stripe from "stripe";
 import Restaurant from "../models/Restaurant.js";
-import RestaurantTimings from "../models/RestaurantTimings.js";
 import Table from "../models/Table.js";
 import Booking from "../models/Booking.js";
 import SlotLock from "../models/SlotLock.js";
@@ -9,31 +8,15 @@ import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
-// --- Helper Functions ---
-const getDayOfWeek = (date) => {
-    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    return days[date.getUTCDay()];
-};
-
-const generateTimeSlots = (start, end, intervalMinutes = 60) => {
-    const slots = [];
-    const [startHour, startMinute] = start.split(':').map(Number);
-    const [endHour, endMinute] = end.split(':').map(Number);
-
-    let currentHour = startHour;
-    let currentMinute = startMinute;
-
-    while (currentHour < endHour || (currentHour === endHour && currentMinute < endMinute)) {
-        slots.push(`${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}`);
-        currentMinute += intervalMinutes;
-        if (currentMinute >= 60) {
-            currentHour += Math.floor(currentMinute / 60);
-            currentMinute %= 60;
-        }
+// Helper to check continuity of time slots
+const areSlotsSequential = (slots) => {
+    if (!slots || slots.length < 2) return true;
+    const hours = slots.map(s => parseInt(s.split(':')[0], 10)).sort((a,b) => a - b);
+    for (let i = 0; i < hours.length - 1; i++) {
+        if (hours[i+1] !== hours[i] + 1) return false;
     }
-    return slots;
+    return true;
 };
-
 
 // --- Controller Functions ---
 
@@ -42,93 +25,70 @@ export const getAvailableSlots = async (req, res, next) => {
         const { restaurantId } = req.params;
         const { date, guests } = req.query;
 
-        if (!date || !guests) {
-            return res.status(400).json({ success: false, message: "Date and number of guests are required." });
-        }
+        if (!date || !guests) return res.status(400).json({ success: false, message: "Date and guests required." });
 
-        const requestedDate = new Date(date);
-        if (isNaN(requestedDate.getTime())) {
-            return res.status(400).json({ success: false, message: "Invalid date format." });
-        }
+        // FIX: Ensure strict UTC Midnight matching to align with Table storage
+        // Input 'date' is expected to be "YYYY-MM-DD"
+        const searchDate = new Date(date);
+        // Explicitly set to UTC midnight to avoid local timezone shifts
+        searchDate.setUTCHours(0, 0, 0, 0);
         
-        requestedDate.setUTCHours(0, 0, 0, 0);
-
-        const today = new Date();
-        today.setUTCHours(0, 0, 0, 0);
-
-        const maxDate = new Date(today);
-        maxDate.setUTCDate(today.getUTCDate() + 2);
-
-        if (requestedDate < today || requestedDate > maxDate) {
-            return res.status(400).json({ success: false, message: "Bookings are only available for today and the next 2 days." });
-        }
-
-        const dayOfWeek = getDayOfWeek(requestedDate);
         const guestCount = parseInt(guests, 10);
-        
-        if (isNaN(guestCount) || guestCount <= 0) {
-            return res.status(400).json({ success: false, message: "Invalid number of guests." });
-        }
 
-        const restaurantTimings = await RestaurantTimings.findOne({ restaurantId });
-        const dailyTimings = restaurantTimings?.timings.find(t => t.day === dayOfWeek && t.isOpen);
-
-        if (!dailyTimings) {
-            return res.status(200).json({ success: true, data: [], message: "The restaurant is closed on the selected date." });
-        }
-
-        const potentialSlots = generateTimeSlots(dailyTimings.openTime, dailyTimings.closeTime);
-
+        // 1. Find Tables specifically created for this Date
         const availableTables = await Table.find({
             restaurantId,
+            date: searchDate,
             isActive: true,
             capacity: { $gte: guestCount }
         }).lean();
 
         if (availableTables.length === 0) {
-             return res.status(200).json({ success: true, data: [], message: "No tables available for the selected party size." });
+             return res.status(200).json({ success: true, data: [], message: "No tables available for this date." });
         }
 
-        const dateStart = new Date(requestedDate);
-        const dateEnd = new Date(requestedDate);
-        dateEnd.setUTCDate(dateEnd.getUTCDate() + 1);
-
-        const existingBookings = await Booking.find({
-            restaurantId,
-            status: 'confirmed',
-            bookingDate: { $gte: dateStart, $lt: dateEnd }
-        }).select('tableId bookingDate').lean();
+        const tableIds = availableTables.map(t => t._id);
         
-        const activeLocks = config.featureFlags.enableBookingLocks 
-            ? await SlotLock.find({ tableId: { $in: availableTables.map(t => t._id) } }).lean() 
-            : [];
+        // 2. Check Bookings & Locks
+        const existingBookings = await Booking.find({
+            tableId: { $in: tableIds },
+            status: { $in: ['confirmed', 'pending'] }
+        }).select('tableId bookedSlots bookingDate').lean();
+        
+        const activeLocks = await SlotLock.find({ 
+            tableId: { $in: tableIds } 
+        }).lean();
 
-        const bookedOrLockedSlotsMap = new Map();
-        existingBookings.forEach(b => {
-            const time = `${String(b.bookingDate.getUTCHours()).padStart(2, '0')}:${String(b.bookingDate.getUTCMinutes()).padStart(2, '0')}`;
-            const key = `${b.tableId}-${time}`;
-            bookedOrLockedSlotsMap.set(key, true);
-        });
-        activeLocks.forEach(lock => {
-            const time = `${String(lock.bookingTime.getUTCHours()).padStart(2, '0')}:${String(lock.bookingTime.getUTCMinutes()).padStart(2, '0')}`;
-            const key = `${lock.tableId}-${time}`;
-            bookedOrLockedSlotsMap.set(key, true);
-        });
-
-
+        // 3. Build Availability Map
         const availability = availableTables.map(table => {
-            const openSlots = potentialSlots.filter(slot => {
-                const key = `${table._id}-${slot}`;
-                return !bookedOrLockedSlotsMap.has(key);
+            const bookedSlots = new Set();
+            
+            existingBookings.filter(b => b.tableId.toString() === table._id.toString()).forEach(b => {
+                if(b.bookedSlots && b.bookedSlots.length > 0) {
+                    b.bookedSlots.forEach(s => bookedSlots.add(s));
+                } else {
+                    const h = new Date(b.bookingDate).getUTCHours();
+                    bookedSlots.add(`${String(h).padStart(2,'0')}:00`);
+                }
             });
+
+            activeLocks.filter(l => l.tableId.toString() === table._id.toString()).forEach(l => {
+                 const h = new Date(l.bookingTime).getUTCHours(); 
+                 bookedSlots.add(`${String(h).padStart(2,'0')}:00`);
+            });
+
+            const openSlots = table.availableHours.filter(slot => !bookedSlots.has(slot));
+
             return {
                 tableId: table._id,
                 tableNumber: table.tableNumber,
                 capacity: table.capacity,
                 area: table.area,
+                bookingPrice: table.bookingPrice,
+                maxBookingHours: table.maxBookingHours,
                 availableSlots: openSlots
             };
-        }).filter(table => table.availableSlots.length > 0);
+        }).filter(t => t.availableSlots.length > 0);
 
         return res.status(200).json({ success: true, data: availability });
 
@@ -139,20 +99,16 @@ export const getAvailableSlots = async (req, res, next) => {
 };
 
 export const createBookingCheckoutSession = async (req, res, next) => {
-    const { tableId, date, time, guests } = req.body;
+    const { tableId, date, slots, guests } = req.body; 
     const customerId = req.user._id;
 
     const dbSession = await mongoose.startSession();
     try {
         let checkoutUrl, sessionId;
         await dbSession.withTransaction(async () => {
-            if (!tableId || !date || !time || !guests) {
-                throw { statusCode: 400, message: "tableId, date, time, and guests are required." };
+            if (!tableId || !date || !slots || !slots.length || !guests) {
+                throw { statusCode: 400, message: "Missing required fields." };
             }
-
-            const [hour, minute] = time.split(':');
-            const bookingDate = new Date(date);
-            bookingDate.setUTCHours(hour, minute, 0, 0);
 
             const table = await Table.findById(tableId).populate({
                 path: 'restaurantId',
@@ -163,59 +119,85 @@ export const createBookingCheckoutSession = async (req, res, next) => {
             if (!table.restaurantId.stripeSecretKey) {
                 throw { statusCode: 503, message: "This restaurant is not currently accepting online bookings." };
             }
-            
-            if (config.featureFlags.enableBookingLocks) {
-                const existingLock = await SlotLock.findOne({ tableId, bookingTime: bookingDate }).session(dbSession);
-                if (existingLock) {
-                    throw { statusCode: 409, message: "This time slot is currently being booked by another user. Please try again in a few minutes." };
-                }
-                const newLock = new SlotLock({ tableId, bookingTime: bookingDate });
-                await newLock.save({ session: dbSession });
+
+            if (slots.length > table.maxBookingHours) {
+                throw { statusCode: 400, message: `You can only book up to ${table.maxBookingHours} hours.` };
+            }
+            if (!areSlotsSequential(slots)) {
+                throw { statusCode: 400, message: "Please select sequential time slots." };
             }
 
-            const stripe = new Stripe(table.restaurantId.stripeSecretKey);
-            const bookingFee = 1; // UPDATED: Set to 1 for £1.00
+            // FIX: Robust Date Construction for Locks
+            const bookingDateObj = new Date(date);
+            bookingDateObj.setUTCHours(0, 0, 0, 0); // Align base to UTC Midnight
 
-            const stripeSession = await stripe.checkout.sessions.create({
+            const locksToCheck = slots.map(slot => {
+                const [h, m] = slot.split(':');
+                const d = new Date(bookingDateObj);
+                d.setUTCHours(parseInt(h), parseInt(m), 0, 0);
+                return d;
+            });
+
+            const existingLocks = await SlotLock.find({ 
+                tableId, 
+                bookingTime: { $in: locksToCheck } 
+            }).session(dbSession);
+
+            if (existingLocks.length > 0) {
+                throw { statusCode: 409, message: "Selected slots are temporarily locked by another user." };
+            }
+
+            await SlotLock.insertMany(locksToCheck.map(time => ({
+                tableId,
+                bookingTime: time
+            })), { session: dbSession });
+
+            const stripe = new Stripe(table.restaurantId.stripeSecretKey);
+            const price = table.bookingPrice > 0 ? table.bookingPrice : 1; 
+            const origin = req.headers.origin; 
+
+            const sessionConfig = {
                 payment_method_types: ["card"],
                 line_items: [{
                     price_data: {
-                        currency: "gbp", // UPDATED: Changed from "inr" to "gbp"
+                        currency: "gbp",
                         product_data: {
-                            name: `Booking for ${table.restaurantId.restaurantName}`,
-                            description: `Table ${table.tableNumber} for ${guests} guests on ${date} at ${time}`,
+                            name: `Booking Table ${table.tableNumber} - ${table.restaurantId.restaurantName}`,
+                            description: `Date: ${date} | Slots: ${slots.join(', ')} | Guests: ${guests}`,
                         },
-                        unit_amount: bookingFee * 100, // This correctly becomes 100 pence
+                        unit_amount: Math.round(price * 100), 
                     },
-                    quantity: 1,
+                    quantity: 1, 
                 }],
                 mode: "payment",
-                success_url: `${config.clientUrls.successRedirect}?booking_session_id={CHECKOUT_SESSION_ID}`,
-                cancel_url: `${config.clientUrls.failureRedirect}?booking_cancelled=true`,
+                success_url: `${origin}/booking/success?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${origin}/booking/failure?session_id={CHECKOUT_SESSION_ID}`,
                 customer_email: req.user.email,
                 metadata: {
                     customerId: customerId.toString(),
-                    restaurantId: table.restaurantId._id.toString(),
                     tableId,
-                    date,
-                    time,
-                    guests,
-                    bookingFee
+                    slots: JSON.stringify(slots),
+                    date
                 }
-            });
+            };
+
+            const stripeSession = await stripe.checkout.sessions.create(sessionConfig);
             
+            const primaryTime = locksToCheck[0]; 
+
             const pendingBooking = new Booking({
                 bookingNumber: generateUniqueOrderNumber(),
                 restaurantId: table.restaurantId._id,
                 customerId,
                 tableId,
-                bookingDate,
+                bookingDate: primaryTime,
+                bookedSlots: slots,
                 guests,
-                status: 'pending',
+                status: 'pending', 
                 paymentDetails: {
                     sessionId: stripeSession.id,
-                    paymentStatus: 'paid',
-                    bookingFee: bookingFee
+                    paymentStatus: 'pending', 
+                    bookingFee: price
                 }
             });
             await pendingBooking.save({ session: dbSession });
@@ -247,51 +229,48 @@ export const confirmBooking = async (req, res, next) => {
     try {
         let confirmedBooking;
         await dbSession.withTransaction(async () => {
-            const pendingBooking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId, status: 'pending' }).session(dbSession);
+            const booking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId }).session(dbSession);
             
-            if (!pendingBooking) {
-                const alreadyConfirmed = await Booking.findOne({ 'paymentDetails.sessionId': sessionId, status: 'confirmed' }).session(dbSession);
-                if (alreadyConfirmed) {
-                    confirmedBooking = alreadyConfirmed;
-                    return;
-                }
-                throw { statusCode: 404, message: "No pending booking found for this session. It may have expired or already been confirmed." };
+            if (!booking) throw { statusCode: 404, message: "Booking not found." };
+            
+            // Idempotency check
+            if (booking.status === 'confirmed' && booking.paymentDetails.paymentStatus === 'paid') {
+                confirmedBooking = booking;
+                return;
             }
 
-            const restaurant = await Restaurant.findById(pendingBooking.restaurantId).select('+stripeSecretKey').session(dbSession);
-            if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant payment configuration not found.");
+            const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeSecretKey').session(dbSession);
+            if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant configuration missing.");
 
             const stripe = new Stripe(restaurant.stripeSecretKey);
             const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
 
             if (checkoutSession.payment_status !== 'paid') {
-                throw { statusCode: 402, message: "Payment not completed for this session." };
+                throw { statusCode: 402, message: "Payment not completed." };
             }
             
-            const doubleBookingCheck = await Booking.findOne({
-                tableId: pendingBooking.tableId,
-                bookingDate: pendingBooking.bookingDate,
-                status: 'confirmed',
-                _id: { $ne: pendingBooking._id }
-            }).session(dbSession);
+            // UPDATE STATUSES
+            booking.status = 'confirmed';
+            booking.paymentDetails.paymentStatus = 'paid';
+            confirmedBooking = await booking.save({ session: dbSession });
 
-            if (doubleBookingCheck) {
-                if (checkoutSession.payment_intent) {
-                    await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
-                }
-                pendingBooking.status = 'cancelled_by_owner';
-                await pendingBooking.save({ session: dbSession });
-                throw { statusCode: 409, message: "This time slot was booked by another user just moments ago. Your payment will be refunded." };
-            }
-            
-            pendingBooking.status = 'confirmed';
-            confirmedBooking = await pendingBooking.save({ session: dbSession });
+            // CLEANUP LOCKS
+            if (booking.bookedSlots && booking.bookedSlots.length > 0) {
+                 const dateBase = new Date(booking.bookingDate);
+                 // bookingDate acts as primary anchor, ensure we align date parts
+                 const year = dateBase.getUTCFullYear();
+                 const month = dateBase.getUTCMonth();
+                 const day = dateBase.getUTCDate();
 
-            if (config.featureFlags.enableBookingLocks) {
-                await SlotLock.deleteOne({
-                    tableId: confirmedBooking.tableId,
-                    bookingTime: confirmedBooking.bookingDate
-                }).session(dbSession);
+                 const lockTimes = booking.bookedSlots.map(s => {
+                     const [h, m] = s.split(':');
+                     return new Date(Date.UTC(year, month, day, parseInt(h), parseInt(m), 0));
+                 });
+                 
+                 await SlotLock.deleteMany({
+                     tableId: booking.tableId,
+                     bookingTime: { $in: lockTimes }
+                 }).session(dbSession);
             }
         });
         
@@ -312,11 +291,57 @@ export const confirmBooking = async (req, res, next) => {
     }
 };
 
+export const handleBookingFailure = async (req, res, next) => {
+    const { sessionId } = req.body;
+    if (!sessionId) return res.status(400).json({ success: false, message: "Session ID required." });
+
+    const dbSession = await mongoose.startSession();
+    try {
+        await dbSession.withTransaction(async () => {
+            const booking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId }).session(dbSession);
+            
+            if (!booking) return; 
+
+            // Only act if pending
+            if (booking.status === 'pending') {
+                booking.status = 'cancelled_by_user';
+                booking.paymentDetails.paymentStatus = 'failed';
+                await booking.save({ session: dbSession });
+
+                // RELEASE LOCKS
+                if (booking.bookedSlots && booking.bookedSlots.length > 0) {
+                     const dateBase = new Date(booking.bookingDate);
+                     const year = dateBase.getUTCFullYear();
+                     const month = dateBase.getUTCMonth();
+                     const day = dateBase.getUTCDate();
+    
+                     const lockTimes = booking.bookedSlots.map(s => {
+                         const [h, m] = s.split(':');
+                         return new Date(Date.UTC(year, month, day, parseInt(h), parseInt(m), 0));
+                     });
+                     
+                     await SlotLock.deleteMany({
+                         tableId: booking.tableId,
+                         bookingTime: { $in: lockTimes }
+                     }).session(dbSession);
+                }
+            }
+        });
+
+        return res.status(200).json({ success: true, message: "Booking cancelled and slots released." });
+
+    } catch (error) {
+        logger.error("Error handling booking failure", { error: error.message });
+        next(error);
+    } finally {
+        dbSession.endSession();
+    }
+};
+
 export const getCustomerBookings = async (req, res, next) => {
     try {
         const customerId = req.user._id;
         const { status } = req.query;
-        
         const query = { customerId };
         const now = new Date();
 
@@ -328,7 +353,6 @@ export const getCustomerBookings = async (req, res, next) => {
         } else if (status) {
             query.status = status;
         }
-
 
         const bookings = await Booking.find(query)
             .populate('restaurantId', 'restaurantName address')
@@ -348,9 +372,7 @@ export const getRestaurantBookings = async (req, res, next) => {
         const { status, date } = req.query;
         
         const query = { restaurantId };
-        if (status) {
-            query.status = status;
-        }
+        if (status) query.status = status;
         
         if (date) {
             const startDate = new Date(date);
@@ -359,7 +381,6 @@ export const getRestaurantBookings = async (req, res, next) => {
             endDate.setUTCHours(23, 59, 59, 999);
             query.bookingDate = { $gte: startDate, $lte: endDate };
         }
-
 
         const bookings = await Booking.find(query)
             .populate('customerId', 'fullName email')
@@ -399,8 +420,8 @@ export const cancelBookingByUser = async (req, res, next) => {
         await dbSession.withTransaction(async () => {
             const booking = await Booking.findOne({ _id: bookingId, customerId }).session(dbSession);
 
-            if (!booking) throw { statusCode: 404, message: "Booking not found or you do not have permission to cancel it." };
-            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `This booking cannot be cancelled as its status is '${booking.status}'.` };
+            if (!booking) throw { statusCode: 404, message: "Booking not found." };
+            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `Cannot cancel booking with status '${booking.status}'.` };
 
             const now = new Date();
             const bookingTime = new Date(booking.bookingDate);
@@ -411,10 +432,10 @@ export const cancelBookingByUser = async (req, res, next) => {
             updatedBooking = await cancelAndRefundBooking(booking, dbSession, 'cancelled_by_user');
         });
         
-        return res.status(200).json({ success: true, message: "Booking cancelled and refunded successfully.", data: updatedBooking });
+        return res.status(200).json({ success: true, message: "Booking cancelled and refunded.", data: updatedBooking });
     } catch (error) {
         logger.error("Error cancelling booking by user", { error: error.message, bookingId });
-        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected server error occurred." });
+        res.status(error.statusCode || 500).json({ success: false, message: error.message });
     } finally {
         dbSession.endSession();
     }
@@ -430,16 +451,16 @@ export const cancelBookingByOwner = async (req, res, next) => {
         await dbSession.withTransaction(async () => {
             const booking = await Booking.findOne({ _id: bookingId, restaurantId }).session(dbSession);
 
-            if (!booking) throw { statusCode: 404, message: "Booking not found or it does not belong to your restaurant." };
-            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `This booking cannot be cancelled as its status is '${booking.status}'.` };
+            if (!booking) throw { statusCode: 404, message: "Booking not found." };
+            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `Cannot cancel booking with status '${booking.status}'.` };
 
             updatedBooking = await cancelAndRefundBooking(booking, dbSession, 'cancelled_by_owner');
         });
         
-        return res.status(200).json({ success: true, message: "Booking cancelled and refunded successfully.", data: updatedBooking });
+        return res.status(200).json({ success: true, message: "Booking cancelled and refunded.", data: updatedBooking });
     } catch (error) {
         logger.error("Error cancelling booking by owner", { error: error.message, bookingId });
-        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected server error occurred." });
+        res.status(error.statusCode || 500).json({ success: false, message: error.message });
     } finally {
         dbSession.endSession();
     }
