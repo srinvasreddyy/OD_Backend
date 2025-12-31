@@ -31,9 +31,9 @@ export const placeCashOrder = async (req, res, next) => {
             // Validate Order Type (Default to delivery if missing)
             const validOrderType = ['delivery', 'pickup'].includes(orderType) ? orderType : 'delivery';
 
-            // Validate Address (Required for Delivery, Optional structure for Pickup but we expect payload)
-            if (!deliveryAddress) {
-                throw { statusCode: 400, message: "Delivery address details are required." };
+            // Validate Address (Required for Delivery only)
+            if (validOrderType === 'delivery' && (!deliveryAddress || !deliveryAddress.coordinates)) {
+                throw { statusCode: 400, message: "Delivery address with coordinates is required for delivery orders." };
             }
 
             // 3. Fetch User and Cart
@@ -48,9 +48,11 @@ export const placeCashOrder = async (req, res, next) => {
             const restaurant = await Restaurant.findById(restaurantId).session(dbSession).lean();
             if (!restaurant) throw { statusCode: 404, message: `Restaurant with ID ${restaurantId} not found.` };
             
-            if (!restaurant.acceptsCashOnDelivery) {
+            // Strict check: if explicitly false, block it. If undefined, default true (handled by model default, but safe to check here)
+            if (restaurant.acceptsCashOnDelivery === false) {
                 throw { statusCode: 400, message: "This restaurant does not accept Cash on Delivery." };
             }
+            
             if (!restaurant.isActive) {
                  throw { statusCode: 400, message: "This restaurant is currently not accepting orders." };
             }
@@ -80,11 +82,12 @@ export const placeCashOrder = async (req, res, next) => {
             // Calculate Final Pricing
             const { pricing } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
 
-            // 7. Format Address for Schema (Map addressLine1 -> fullAddress)
+            // 7. Format Address for Schema
+            // If pickup, we might not have a full address, so we provide defaults to satisfy schema if needed, or leave partial.
             const formattedAddress = {
-                fullAddress: deliveryAddress.addressLine1 || deliveryAddress.fullAddress || "Self Pickup",
-                landmark: deliveryAddress.landmark || "",
-                coordinates: deliveryAddress.coordinates || { type: 'Point', coordinates: [0, 0] }
+                fullAddress: deliveryAddress?.addressLine1 || deliveryAddress?.fullAddress || "Self Pickup",
+                landmark: deliveryAddress?.landmark || "",
+                coordinates: deliveryAddress?.coordinates || { type: 'Point', coordinates: [0, 0] }
             };
 
             // 8. Create and Save the Order
@@ -93,8 +96,8 @@ export const placeCashOrder = async (req, res, next) => {
                 restaurantId,
                 customerId: userId,
                 customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
-                orderType: validOrderType, // Use the extracted type
-                deliveryAddress: formattedAddress, // Use formatted address
+                orderType: validOrderType,
+                deliveryAddress: formattedAddress,
                 orderedItems: processedItems,
                 pricing,
                 paymentType: 'cash',
@@ -115,8 +118,6 @@ export const placeCashOrder = async (req, res, next) => {
         return res.status(201).json({ success: true, message: "Order placed successfully!", data: newOrder });
         
     } catch (error) {
-        // If the error comes from transaction abort, session might already be ended, 
-        // but we wrap in try-catch to be safe or just use endSession in finally.
         if (dbSession.inTransaction()) {
              await dbSession.abortTransaction();
         }

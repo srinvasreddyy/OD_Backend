@@ -87,6 +87,10 @@ const restaurantSchema = new mongoose.Schema({
       min: 0
     }
   },
+  acceptsCashOnDelivery: {
+    type: Boolean,
+    default: true
+  },
   isEmailVerified: { type: Boolean, default: false },
   currentOTP: { type: String, select: false },
   otpGeneratedAt: { type: Date, select: false },
