@@ -37,11 +37,13 @@ const cartItemSchema = new mongoose.Schema({
     min: 1,
     default: 1
   },
-  selectedVariant: {
+  // CHANGED: From singular object to Array of objects to match logic
+  selectedVariants: [{
     _id: false,
     groupId: String,
     variantId: String
-  },
+  }],
+  // ALREADY CORRECT: Array of objects
   selectedAddons: [{
     _id: false,
     groupId: String,
@@ -60,7 +62,6 @@ const userSchema = new mongoose.Schema({
     type: String
   },
   phoneNumber: String,
-  // Ensure username is present
   username: {
     type: String,
     unique: true,
@@ -69,7 +70,6 @@ const userSchema = new mongoose.Schema({
   },
   email: {
     type: String,
-    // sparse: true allows multiple users to have 'null' email (important for delivery partners)
     sparse: true, 
     unique: true,
     trim: true,

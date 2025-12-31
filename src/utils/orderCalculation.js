@@ -6,7 +6,9 @@ export const validateCart = (cart) => {
         return { error: "Cannot process an empty cart.", restaurantId: null };
     }
     const restaurantId = cart[0].menuItemId.restaurantId.toString();
-    const allItemsFromSameRestaurant = cart.every(item => item.menuItemId.restaurantId.toString() === restaurantId);
+    const allItemsFromSameRestaurant = cart.every(item => 
+        item.menuItemId.restaurantId && item.menuItemId.restaurantId.toString() === restaurantId
+    );
     if (!allItemsFromSameRestaurant) {
         return { error: "All items in the cart must be from the same restaurant.", restaurantId: null };
     }
@@ -14,46 +16,66 @@ export const validateCart = (cart) => {
 };
 
 export const processOrderItems = async (cart) => {
-    const itemIds = cart.map(item => item.menuItemId._id);
+    const itemIds = cart.map(item => item.menuItemId._id || item.menuItemId);
     const freshMenuItems = await MenuItem.find({ '_id': { $in: itemIds } }).lean();
     const freshMenuItemsMap = new Map(freshMenuItems.map(item => [item._id.toString(), item]));
 
     return cart.map(cartItem => {
-        const menuItem = freshMenuItemsMap.get(cartItem.menuItemId._id.toString());
+        const itemIdString = cartItem.menuItemId._id ? cartItem.menuItemId._id.toString() : cartItem.menuItemId.toString();
+        const menuItem = freshMenuItemsMap.get(itemIdString);
+        
         if (!menuItem || !menuItem.isAvailable) {
-            throw new Error(`Item "${cartItem.menuItemId.itemName}" is currently unavailable.`);
+            throw new Error(`Item "${menuItem?.itemName || 'Unknown'}" is currently unavailable.`);
         }
         
         const { quantity, selectedVariants, selectedAddons } = cartItem;
-        let lineItemSubtotalBeforeQuantity = menuItem.basePrice;
+        
+        // Start with Base Price
+        let unitPrice = parseFloat(menuItem.basePrice || 0);
 
-        // Process Variants (Array)
+        // --- 1. Process Variants ---
         const variantsDetails = [];
-        if (selectedVariants && selectedVariants.length > 0) {
+        if (Array.isArray(selectedVariants) && selectedVariants.length > 0) {
             selectedVariants.forEach(sv => {
-                const group = menuItem.variantGroups.find(g => g.groupId === sv.groupId);
-                const variant = group?.variants.find(v => v.variantId === sv.variantId);
-                if (variant) {
-                    lineItemSubtotalBeforeQuantity += (variant.additionalPrice || 0);
-                    variantsDetails.push({ 
-                        ...sv, 
-                        variantName: variant.variantName, 
-                        additionalPrice: variant.additionalPrice,
-                        groupTitle: group.groupTitle 
-                    });
+                // Robust ID Matching (String vs UUID)
+                const group = menuItem.variantGroups?.find(g => String(g.groupId) === String(sv.groupId));
+                if (group) {
+                    const variant = group.variants?.find(v => String(v.variantId) === String(sv.variantId));
+                    if (variant) {
+                        const additionalPrice = parseFloat(variant.additionalPrice || 0);
+                        unitPrice += additionalPrice;
+                        
+                        variantsDetails.push({ 
+                            groupId: sv.groupId,
+                            variantId: sv.variantId,
+                            variantName: variant.variantName, 
+                            additionalPrice: additionalPrice,
+                            groupTitle: group.groupTitle 
+                        });
+                    }
                 }
             });
         }
 
-        // Process Addons
+        // --- 2. Process Addons ---
         const addonsDetails = [];
-        if (selectedAddons?.length) {
+        if (Array.isArray(selectedAddons) && selectedAddons.length > 0) {
             selectedAddons.forEach(addon => {
-                const group = menuItem.addonGroups.find(g => g.groupId === addon.groupId);
-                const option = group?.addons.find(a => a.addonId === addon.addonId);
-                if (option) {
-                    lineItemSubtotalBeforeQuantity += (option.price || 0);
-                    addonsDetails.push({ ...addon, optionTitle: option.optionTitle, price: option.price });
+                // Robust ID Matching
+                const group = menuItem.addonGroups?.find(g => String(g.groupId) === String(addon.groupId));
+                if (group) {
+                    const option = group.addons?.find(a => String(a.addonId) === String(addon.addonId));
+                    if (option) {
+                        const addonPrice = parseFloat(option.price || 0);
+                        unitPrice += addonPrice;
+                        
+                        addonsDetails.push({ 
+                            groupId: addon.groupId,
+                            addonId: addon.addonId,
+                            optionTitle: option.optionTitle, 
+                            price: addonPrice 
+                        });
+                    }
                 }
             });
         }
@@ -61,34 +83,32 @@ export const processOrderItems = async (cart) => {
         return {
             itemId: menuItem._id,
             itemName: menuItem.itemName,
-            basePrice: menuItem.basePrice,
-            quantity,
+            basePrice: parseFloat(menuItem.basePrice),
+            quantity: Number(quantity),
             selectedVariants: variantsDetails,
             selectedAddons: addonsDetails,
-            itemTotal: lineItemSubtotalBeforeQuantity * quantity,
+            itemTotal: unitPrice * Number(quantity),
         };
     });
 };
 
 export const calculateDeliveryFee = (lat1, lon1, lat2, lon2, settings) => {
+    if (!settings) return 0;
     const distance = getDistanceFromLatLonInMiles(lat1, lon1, lat2, lon2);
-    if (distance > settings.maxDeliveryRadius) {
-        return -1; 
-    }
-    if (distance <= settings.freeDeliveryRadius) {
-        return 0;
-    }
+    if (distance > settings.maxDeliveryRadius) return -1;
+    if (distance <= settings.freeDeliveryRadius) return 0;
     const chargeableDistance = distance - settings.freeDeliveryRadius;
     return Math.round(chargeableDistance * settings.chargePerMile * 100) / 100;
 };
 
 export const calculateOrderPricing = (processedItems, deliveryFee, restaurant, offerDetails = null) => {
     const subtotal = processedItems.reduce((acc, item) => acc + item.itemTotal, 0);
-    const handlingCharge = subtotal * (restaurant.handlingChargesPercentage / 100);
+    const handlingCharge = subtotal * ((restaurant.handlingChargesPercentage || 0) / 100);
+    
     let discountAmount = 0;
-    let finalDeliveryFee = deliveryFee;
+    let finalDeliveryFee = Math.max(0, deliveryFee);
 
-    if (offerDetails && subtotal >= offerDetails.minOrderValue) {
+    if (offerDetails && subtotal >= (offerDetails.minOrderValue || 0)) {
         switch (offerDetails.discountType) {
             case 'PERCENTAGE':
                 discountAmount = subtotal * (offerDetails.discountValue / 100);
@@ -100,15 +120,15 @@ export const calculateOrderPricing = (processedItems, deliveryFee, restaurant, o
                 discountAmount = offerDetails.discountValue;
                 break;
             case 'FREE_DELIVERY':
-                discountAmount = deliveryFee;
+                discountAmount = finalDeliveryFee;
                 finalDeliveryFee = 0;
                 break;
         }
     }
     
-    // Ensure discount does not exceed the subtotal + handling charge
-    if (discountAmount > subtotal + handlingCharge) {
-        discountAmount = subtotal + handlingCharge;
+    const maxApplicableDiscount = subtotal + handlingCharge;
+    if (discountAmount > maxApplicableDiscount) {
+        discountAmount = maxApplicableDiscount;
     }
     
     const totalAmount = subtotal + handlingCharge + finalDeliveryFee - discountAmount;

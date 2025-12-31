@@ -9,13 +9,13 @@ import { calculateOrderPricing, processOrderItems, calculateDeliveryFee } from "
 // --- Helper Functions ---
 
 const generateCartItemKey = ({ menuItemId, selectedVariants, selectedAddons }) => {
-    // Sort variants to ensure consistent key generation (e.g. Size+Crust is same as Crust+Size)
-    const variantPart = (selectedVariants || [])
+    // Robust Key Generation: Sorts IDs to ensure uniqueness regardless of order
+    const variantPart = (Array.isArray(selectedVariants) ? selectedVariants : [])
         .map(v => `${v.groupId}:${v.variantId}`)
         .sort()
         .join('-');
         
-    const addonsPart = (selectedAddons || [])
+    const addonsPart = (Array.isArray(selectedAddons) ? selectedAddons : [])
         .map(a => a.addonId)
         .sort()
         .join('-');
@@ -43,33 +43,38 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
         throw { status: 400, message: `You can only add a maximum of ${menuItem.maximumQuantity} for this item.` };
     }
 
-    // --- Validate Variants (Array Support) ---
-    const normalizedVariants = selectedVariants || [];
+    // --- Validate Variants (Ensure Array) ---
+    const normalizedVariants = Array.isArray(selectedVariants) ? selectedVariants : [];
     if (normalizedVariants.length > 0) {
         for (const selection of normalizedVariants) {
-             const group = menuItem.variantGroups.find(g => g.groupId === selection.groupId);
+             // Robust String Comparison
+             const group = menuItem.variantGroups?.find(g => String(g.groupId) === String(selection.groupId));
              if (!group) throw { status: 400, message: "Invalid variant group selected." };
              
-             const variant = group.variants.find(v => v.variantId === selection.variantId);
+             const variant = group.variants?.find(v => String(v.variantId) === String(selection.variantId));
              if (!variant) throw { status: 400, message: `Invalid variant option selected.` };
         }
     }
 
-    // --- Validate Addons ---
-    const normalizedAddons = selectedAddons || [];
+    // --- Validate Addons (Ensure Array) ---
+    const normalizedAddons = Array.isArray(selectedAddons) ? selectedAddons : [];
     if (normalizedAddons.length > 0) {
         const addonMap = new Map();
-        menuItem.addonGroups.forEach(g => g.addons.forEach(a => addonMap.set(a.addonId, g.groupId)));
+        // Map AddonID -> GroupID for validation
+        menuItem.addonGroups?.forEach(g => g.addons.forEach(a => addonMap.set(String(a.addonId), String(g.groupId))));
         
         for (const selection of normalizedAddons) {
-            if (!addonMap.has(selection.addonId) || addonMap.get(selection.addonId) !== selection.groupId) {
+            const sAddonId = String(selection.addonId);
+            const sGroupId = String(selection.groupId);
+            
+            if (!addonMap.has(sAddonId) || addonMap.get(sAddonId) !== sGroupId) {
                 throw { status: 400, message: `Invalid addon selected: ${selection.addonId}.` };
             }
         }
         
         // Check Min/Max/Compulsory constraints
-        menuItem.addonGroups.forEach(group => {
-            const selectedCountForGroup = normalizedAddons.filter(a => a.groupId === group.groupId).length;
+        menuItem.addonGroups?.forEach(group => {
+            const selectedCountForGroup = normalizedAddons.filter(a => String(a.groupId) === String(group.groupId)).length;
             
             if (group.customizationBehavior === 'compulsory' && selectedCountForGroup === 0) {
                  throw { status: 400, message: `Selection required for: ${group.groupTitle}` };
@@ -107,7 +112,6 @@ const clearAppliedPromo = (user) => {
 export const addItemToCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        // Accept selectedVariants (plural array) instead of single selectedVariant
         const { menuItemId, quantity = 1, selectedVariants, selectedAddons } = req.body;
 
         const { menuItem, cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariants, selectedAddons);
@@ -168,28 +172,32 @@ export const getCart = async (req, res, next) => {
                 if (!item.menuItemId) return null;
                 const enrichedItem = { ...item };
                 
-                // Enrich Variants (Array)
-                if (item.selectedVariants?.length > 0) {
+                // Enrich Variants (Safely handle potentially missing arrays)
+                if (Array.isArray(item.selectedVariants) && item.selectedVariants.length > 0) {
                     enrichedItem.selectedVariants = item.selectedVariants.map(sv => {
-                        const group = item.menuItemId.variantGroups.find(g => g.groupId === sv.groupId);
+                        const group = item.menuItemId.variantGroups?.find(g => String(g.groupId) === String(sv.groupId));
                         if (group) {
-                            const variant = group.variants.find(v => v.variantId === sv.variantId);
-                            return { ...sv, details: variant, groupTitle: group.groupTitle };
+                            const variant = group.variants?.find(v => String(v.variantId) === String(sv.variantId));
+                            if (variant) {
+                                return { ...sv, details: variant, groupTitle: group.groupTitle };
+                            }
                         }
-                        return sv;
-                    }).filter(sv => sv.details);
+                        return null;
+                    }).filter(Boolean);
                 }
 
                 // Enrich Addons
-                if (item.selectedAddons?.length > 0) {
+                if (Array.isArray(item.selectedAddons) && item.selectedAddons.length > 0) {
                     enrichedItem.selectedAddons = item.selectedAddons.map(sa => {
-                        const group = item.menuItemId.addonGroups.find(g => g.groupId === sa.groupId);
+                        const group = item.menuItemId.addonGroups?.find(g => String(g.groupId) === String(sa.groupId));
                         if (group) {
-                            const addon = group.addons.find(a => a.addonId === sa.addonId);
-                            return { ...sa, details: addon };
+                            const addon = group.addons?.find(a => String(a.addonId) === String(sa.addonId));
+                            if (addon) {
+                                return { ...sa, details: addon };
+                            }
                         }
-                        return sa;
-                    }).filter(sa => sa.details);
+                        return null;
+                    }).filter(Boolean);
                 }
                 return enrichedItem;
             }).filter(Boolean);
@@ -257,7 +265,7 @@ export const getCartSummary = async (req, res, next) => {
         let deliveryError = null;
 
         if (mode === 'pickup') {
-            calculatedDeliveryFee = 0; // Free for pickup
+            calculatedDeliveryFee = 0; 
         } else if (lat && lng) {
             const [restLon, restLat] = restaurant.address.coordinates.coordinates;
             const fee = calculateDeliveryFee(restLat, restLon, parseFloat(lat), parseFloat(lng), restaurant.deliverySettings);
