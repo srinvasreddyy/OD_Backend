@@ -251,21 +251,107 @@ export const deleteMenuItem = async (req, res, next) => {
 export const getAllMenuItems = async (req, res, next) => {
     try {
         const { page, limit, skip } = getPaginationParams(req.query);
+        const { search, type, categoryId } = req.query;
 
-        const menuItems = await MenuItem.find({ isAvailable: true })
-            .populate('restaurantId', 'restaurantName address.city')
-            .populate('categories', 'categoryName')
-            .skip(skip)
-            .limit(limit);
+        // 1. Build the Aggregation Pipeline
+        const pipeline = [];
 
-        const totalItems = await MenuItem.countDocuments({ isAvailable: true });
+        // 2. Initial Match: Availability
+        const matchStage = { isAvailable: true };
+
+        // 3. Filter by 'isFood' based on the requested 'type'
+        // 'groceries' -> isFood: false
+        // 'food_delivery' or 'food_delivery_and_dining' -> isFood: true
+        if (type) {
+            const isGrocery = type === 'groceries';
+            matchStage.isFood = !isGrocery;
+        }
+
+        // 4. Filter by Category ID
+        if (categoryId) {
+            matchStage.categories = new mongoose.Types.ObjectId(categoryId);
+        }
+
+        // 5. Filter by Search Text (Item Name)
+        if (search) {
+            matchStage.itemName = { $regex: search, $options: 'i' };
+        }
+
+        pipeline.push({ $match: matchStage });
+
+        // 6. Lookup Restaurant to check status & get details
+        pipeline.push({
+            $lookup: {
+                from: 'restaurants',
+                localField: 'restaurantId',
+                foreignField: '_id',
+                as: 'restaurant'
+            }
+        });
+        
+        // Unwind to filter
+        pipeline.push({ $unwind: '$restaurant' });
+
+        // 7. Filter Inactive Restaurants or Wrong Types
+        // Ensure we only show items from active restaurants
+        const restaurantMatch = { 'restaurant.isActive': true };
+        
+        // Strict Type Check (Double Check)
+        if (type === 'groceries') {
+            restaurantMatch['restaurant.restaurantType'] = 'groceries';
+        } else if (type === 'food_delivery') {
+            restaurantMatch['restaurant.restaurantType'] = { $in: ['food_delivery', 'food_delivery_and_dining'] };
+        }
+
+        pipeline.push({ $match: restaurantMatch });
+
+        // 8. Pagination & Sort (Facet)
+        pipeline.push({
+            $facet: {
+                metadata: [{ $count: "total" }],
+                data: [
+                    { $sort: { createdAt: -1 } },
+                    { $skip: skip },
+                    { $limit: limit },
+                    // Project only necessary fields
+                    {
+                        $project: {
+                            _id: 1,
+                            itemName: 1,
+                            description: 1,
+                            basePrice: 1,
+                            displayImageUrl: 1,
+                            isAvailable: 1,
+                            isFood: 1,
+                            variantGroups: 1,
+                            addonGroups: 1,
+                            "restaurant._id": 1,
+                            "restaurant.restaurantName": 1,
+                            "restaurant.restaurantType": 1,
+                            "restaurant.address.city": 1,
+                            "restaurant.address.area": 1
+                        }
+                    }
+                ]
+            }
+        });
+
+        const result = await MenuItem.aggregate(pipeline);
+
+        const data = result[0].data;
+        const totalItems = result[0].metadata[0]?.total || 0;
 
         res.status(200).json({
             success: true,
-            data: menuItems,
-            pagination: { totalItems, totalPages: Math.ceil(totalItems / limit), currentPage: page }
+            data: data,
+            pagination: { 
+                totalItems, 
+                totalPages: Math.ceil(totalItems / limit), 
+                currentPage: page 
+            }
         });
     } catch (error) {
+        logger.error("Error fetching all menu items", { error: error.message });
         next(error);
     }
 };

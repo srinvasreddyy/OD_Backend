@@ -1,5 +1,3 @@
-// src/controllers/cartController.js
-
 import mongoose from "mongoose";
 import User from '../models/User.js';
 import MenuItem from '../models/MenuItem.js';
@@ -10,16 +8,22 @@ import { calculateOrderPricing, processOrderItems, calculateDeliveryFee } from "
 
 // --- Helper Functions ---
 
-const generateCartItemKey = ({ menuItemId, selectedVariant, selectedAddons }) => {
-    const variantPart = selectedVariant?.variantId || 'novariant';
+const generateCartItemKey = ({ menuItemId, selectedVariants, selectedAddons }) => {
+    // Sort variants to ensure consistent key generation (e.g. Size+Crust is same as Crust+Size)
+    const variantPart = (selectedVariants || [])
+        .map(v => `${v.groupId}:${v.variantId}`)
+        .sort()
+        .join('-');
+        
     const addonsPart = (selectedAddons || [])
         .map(a => a.addonId)
         .sort()
         .join('-');
-    return `${menuItemId}_${variantPart}_${addonsPart || 'noaddons'}`;
+        
+    return `${menuItemId}_${variantPart || 'novar'}_${addonsPart || 'noaddons'}`;
 };
 
-const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVariant, selectedAddons) => {
+const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVariants, selectedAddons) => {
     if (!mongoose.Types.ObjectId.isValid(menuItemId)) {
         throw { status: 400, message: "Invalid Menu Item ID format." };
     }
@@ -39,24 +43,44 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
         throw { status: 400, message: `You can only add a maximum of ${menuItem.maximumQuantity} for this item.` };
     }
 
-    const normalizedVariant = (selectedVariant && selectedVariant.groupId && selectedVariant.variantId) ? selectedVariant : null;
-    const normalizedAddons = selectedAddons || [];
-
-    if (normalizedVariant) {
-        const group = menuItem.variantGroups.find(g => g.groupId === normalizedVariant.groupId);
-        if (!group || !group.variants.some(v => v.variantId === normalizedVariant.variantId)) {
-            throw { status: 400, message: "Invalid variant selected." };
+    // --- Validate Variants (Array Support) ---
+    const normalizedVariants = selectedVariants || [];
+    if (normalizedVariants.length > 0) {
+        for (const selection of normalizedVariants) {
+             const group = menuItem.variantGroups.find(g => g.groupId === selection.groupId);
+             if (!group) throw { status: 400, message: "Invalid variant group selected." };
+             
+             const variant = group.variants.find(v => v.variantId === selection.variantId);
+             if (!variant) throw { status: 400, message: `Invalid variant option selected.` };
         }
     }
 
+    // --- Validate Addons ---
+    const normalizedAddons = selectedAddons || [];
     if (normalizedAddons.length > 0) {
         const addonMap = new Map();
         menuItem.addonGroups.forEach(g => g.addons.forEach(a => addonMap.set(a.addonId, g.groupId)));
+        
         for (const selection of normalizedAddons) {
             if (!addonMap.has(selection.addonId) || addonMap.get(selection.addonId) !== selection.groupId) {
                 throw { status: 400, message: `Invalid addon selected: ${selection.addonId}.` };
             }
         }
+        
+        // Check Min/Max/Compulsory constraints
+        menuItem.addonGroups.forEach(group => {
+            const selectedCountForGroup = normalizedAddons.filter(a => a.groupId === group.groupId).length;
+            
+            if (group.customizationBehavior === 'compulsory' && selectedCountForGroup === 0) {
+                 throw { status: 400, message: `Selection required for: ${group.groupTitle}` };
+            }
+            if (group.minSelection && selectedCountForGroup < group.minSelection) {
+                 throw { status: 400, message: `Please select at least ${group.minSelection} options for ${group.groupTitle}` };
+            }
+            if (group.maxSelection && selectedCountForGroup > group.maxSelection) {
+                 throw { status: 400, message: `You can only select up to ${group.maxSelection} options for ${group.groupTitle}` };
+            }
+        });
     }
 
     return {
@@ -66,7 +90,7 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
         itemData: { 
             menuItemId, 
             quantity, 
-            selectedVariant: normalizedVariant, 
+            selectedVariants: normalizedVariants, 
             selectedAddons: normalizedAddons
         },
     };
@@ -83,9 +107,10 @@ const clearAppliedPromo = (user) => {
 export const addItemToCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        const { menuItemId, quantity = 1, selectedVariant, selectedAddons } = req.body;
+        // Accept selectedVariants (plural array) instead of single selectedVariant
+        const { menuItemId, quantity = 1, selectedVariants, selectedAddons } = req.body;
 
-        const { menuItem, cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariant, selectedAddons);
+        const { menuItem, cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariants, selectedAddons);
 
         const user = await User.findById(userId).populate({
             path: `${cartField}.menuItemId`,
@@ -142,10 +167,20 @@ export const getCart = async (req, res, next) => {
             return cart.map(item => {
                 if (!item.menuItemId) return null;
                 const enrichedItem = { ...item };
-                if (item.selectedVariant?.variantId) {
-                    const group = item.menuItemId.variantGroups.find(g => g.groupId === item.selectedVariant.groupId);
-                    if (group) enrichedItem.selectedVariant.details = group.variants.find(v => v.variantId === item.selectedVariant.variantId);
+                
+                // Enrich Variants (Array)
+                if (item.selectedVariants?.length > 0) {
+                    enrichedItem.selectedVariants = item.selectedVariants.map(sv => {
+                        const group = item.menuItemId.variantGroups.find(g => g.groupId === sv.groupId);
+                        if (group) {
+                            const variant = group.variants.find(v => v.variantId === sv.variantId);
+                            return { ...sv, details: variant, groupTitle: group.groupTitle };
+                        }
+                        return sv;
+                    }).filter(sv => sv.details);
                 }
+
+                // Enrich Addons
                 if (item.selectedAddons?.length > 0) {
                     enrichedItem.selectedAddons = item.selectedAddons.map(sa => {
                         const group = item.menuItemId.addonGroups.find(g => g.groupId === sa.groupId);

@@ -24,19 +24,28 @@ export const processOrderItems = async (cart) => {
             throw new Error(`Item "${cartItem.menuItemId.itemName}" is currently unavailable.`);
         }
         
-        const { quantity, selectedVariant, selectedAddons } = cartItem;
+        const { quantity, selectedVariants, selectedAddons } = cartItem;
         let lineItemSubtotalBeforeQuantity = menuItem.basePrice;
 
+        // Process Variants (Array)
         const variantsDetails = [];
-        if (selectedVariant?.variantId) {
-            const group = menuItem.variantGroups.find(g => g.groupId === selectedVariant.groupId);
-            const variant = group?.variants.find(v => v.variantId === selectedVariant.variantId);
-            if (variant) {
-                lineItemSubtotalBeforeQuantity += (variant.additionalPrice || 0);
-                variantsDetails.push({ ...selectedVariant, variantName: variant.variantName, additionalPrice: variant.additionalPrice });
-            }
+        if (selectedVariants && selectedVariants.length > 0) {
+            selectedVariants.forEach(sv => {
+                const group = menuItem.variantGroups.find(g => g.groupId === sv.groupId);
+                const variant = group?.variants.find(v => v.variantId === sv.variantId);
+                if (variant) {
+                    lineItemSubtotalBeforeQuantity += (variant.additionalPrice || 0);
+                    variantsDetails.push({ 
+                        ...sv, 
+                        variantName: variant.variantName, 
+                        additionalPrice: variant.additionalPrice,
+                        groupTitle: group.groupTitle 
+                    });
+                }
+            });
         }
 
+        // Process Addons
         const addonsDetails = [];
         if (selectedAddons?.length) {
             selectedAddons.forEach(addon => {

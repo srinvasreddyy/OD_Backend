@@ -219,7 +219,8 @@ export const updateRestaurantProfile = async (req, res, next) => {
 export const updateRestaurantSettings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
-        const { handlingChargesPercentage, deliverySettings, stripeSecretKey, acceptsCashOnDelivery } = req.body;
+        // Fix: Added acceptsDining to destructuring
+        const { handlingChargesPercentage, deliverySettings, stripeSecretKey, acceptsCashOnDelivery, acceptsDining } = req.body;
 
         const updateData = {};
         if (handlingChargesPercentage !== undefined) {
@@ -236,6 +237,11 @@ export const updateRestaurantSettings = async (req, res, next) => {
         
         if (typeof acceptsCashOnDelivery === 'boolean') { 
             updateData.acceptsCashOnDelivery = acceptsCashOnDelivery;
+        }
+
+        // Fix: Added logic to save acceptsDining
+        if (typeof acceptsDining === 'boolean') {
+            updateData.acceptsDining = acceptsDining;
         }
 
         if (stripeSecretKey) {

@@ -15,8 +15,15 @@ const handleCheckoutSessionCompleted = async (session) => {
         amount_total: stripeAmount,
     } = session;
     
-    // FIX 1: Extract 'orderType' from metadata
-    const { userId, restaurantId, idempotencyKey, cartType, deliveryAddress: deliveryAddressJSON, orderType } = metadata;
+    // FIX 1: Safely Extract Metadata with defaults
+    const { 
+        userId, 
+        restaurantId, 
+        idempotencyKey, 
+        cartType: rawCartType, 
+        deliveryAddress: deliveryAddressJSON, 
+        orderType 
+    } = metadata || {};
     
     if (paymentStatus !== 'paid') {
         logger.warn('Webhook received for non-paid session', { sessionId });
@@ -34,6 +41,9 @@ const handleCheckoutSessionCompleted = async (session) => {
     const dbMongoSession = await mongoose.startSession();
     try {
         await dbMongoSession.withTransaction(async () => {
+            // FIX 2: Ensure cartType is valid before use to prevent "undefined" string literal
+            const cartType = rawCartType && ['foodCart', 'groceriesCart'].includes(rawCartType) ? rawCartType : 'foodCart';
+
             const user = await User.findById(userId).populate({
                 path: `${cartType}.menuItemId`,
             }).session(dbMongoSession);
@@ -48,44 +58,57 @@ const handleCheckoutSessionCompleted = async (session) => {
             if (!restaurant) throw new Error(`Restaurant not found for ID: ${restaurantId}`);
             
             const processedItems = await processOrderItems(cart);
-            const deliveryAddress = JSON.parse(deliveryAddressJSON);
             
-            // FIX 2: Determine order type safely (fallback to delivery if missing)
-            const validOrderType = orderType || 'delivery';
-
+            // FIX 3: Robust JSON Parsing for Address
+            let deliveryAddress = {};
+            try {
+                if (deliveryAddressJSON && deliveryAddressJSON !== "undefined") {
+                    deliveryAddress = JSON.parse(deliveryAddressJSON);
+                }
+            } catch (e) {
+                logger.warn("Webhook: Failed to parse deliveryAddress JSON", { sessionId, error: e.message });
+                // Do not throw, allow order to proceed as pickup or minimal address if possible
+            }
+            
+            // FIX 4: Robust Order Type Determination & Crash Prevention
+            // If orderType says 'delivery' but we have no coordinates, we MUST fall back to 'pickup'
+            // otherwise the delivery fee calculation will crash the transaction.
+            let validOrderType = orderType || 'delivery';
             let deliveryFee = 0;
-            
-            // FIX 3: Only calculate delivery fee if it is strictly a DELIVERY order
+
             if (validOrderType === 'delivery') {
-                const [restLon, restLat] = restaurant.address.coordinates.coordinates;
-                const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
-                deliveryFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
-                
-                // If out of range, we log a warning but try to proceed with 0 fee to avoid dropping a paid order
-                if (deliveryFee === -1) {
-                     logger.warn("Webhook: Delivery address technically out of range but payment passed.", { sessionId });
-                     deliveryFee = 0; 
+                if (!deliveryAddress || !deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates) {
+                    logger.warn("Webhook: Order marked as 'delivery' but address coordinates are missing. Defaulting to 'pickup' to prevent data loss.", { sessionId });
+                    validOrderType = 'pickup';
+                } else {
+                    // Safe to calculate fee
+                    const [restLon, restLat] = restaurant.address.coordinates.coordinates;
+                    const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
+                    deliveryFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
+                    
+                    if (deliveryFee === -1) {
+                         logger.warn("Webhook: Delivery address out of range but payment passed.", { sessionId });
+                         deliveryFee = 0; 
+                    }
                 }
             }
 
-            // We don't need to re-validate promo code as it was part of the initial price calculation
             const { pricing, appliedOffer } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
-
             const backendAmount = Math.round(pricing.totalAmount * 100);
             
-            // FIX 4: Robust Price Matching
-            // Allow a small difference (e.g., due to floating point math) but do NOT crash the order creation.
-            // Logging the mismatch allows admins to investigate later without losing the order.
             if (Math.abs(stripeAmount - backendAmount) > 5) {
-                 logger.warn(`Price mismatch for session ${sessionId}. Stripe: ${stripeAmount}, Backend: ${backendAmount}. Proceeding with order creation despite mismatch to ensure fulfillment.`);
+                 logger.warn(`Price mismatch for session ${sessionId}. Stripe: ${stripeAmount}, Backend: ${backendAmount}. Proceeding with order creation.`);
             }
 
             const newOrder = new Order({
                 restaurantId,
                 customerId: userId,
-                customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
-                orderType: validOrderType, // FIX 5: Use the correct order type (pickup/delivery)
-                deliveryAddress,
+                customerDetails: { 
+                    name: user.fullName || "Customer", // Fallback if name is missing
+                    phoneNumber: user.phoneNumber 
+                },
+                orderType: validOrderType,
+                deliveryAddress: deliveryAddress || {}, // Ensure not null
                 orderedItems: processedItems,
                 pricing,
                 appliedOffer,
@@ -111,7 +134,6 @@ const handleCheckoutSessionCompleted = async (session) => {
     }
 };
 
-// Renamed to 'handleStripeWebhook' to match index.js usage
 const handleStripeWebhook = async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const stripe = new Stripe(config.stripe.secretKey);
@@ -124,14 +146,12 @@ const handleStripeWebhook = async (req, res) => {
         return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Handle the event
     switch (event.type) {
         case 'checkout.session.completed':
             const session = event.data.object;
             try {
                 await handleCheckoutSessionCompleted(session);
             } catch (error) {
-                // Return a 500 to let Stripe know it should retry the webhook
                 return res.status(500).json({ received: false, error: "Failed to process webhook." });
             }
             break;
@@ -142,5 +162,4 @@ const handleStripeWebhook = async (req, res) => {
     res.status(200).json({ received: true });
 };
 
-// Added default export
 export default { handleStripeWebhook };

@@ -226,7 +226,12 @@ export const getUserOrders = async (req, res, next) => {
     try {
         const userId = req.user?._id;
         const { page, limit, skip } = getPaginationParams(req.query);
-        const orders = await Order.find({ customerId: userId }).populate('restaurantId', 'restaurantName address').sort({ createdAt: -1 }).skip(skip).limit(limit);
+        // UPDATED: Added 'restaurantType' to the populate fields to allow frontend filtering
+        const orders = await Order.find({ customerId: userId })
+            .populate('restaurantId', 'restaurantName address restaurantType') 
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
         const totalOrders = await Order.countDocuments({ customerId: userId });
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
@@ -343,7 +348,11 @@ export const getOrderDetails = async (req, res, next) => {
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
         }
-        const order = await Order.findById(orderId).populate('restaurantId', 'restaurantName address').populate('customerId', 'fullName email');
+        // UPDATED: Added 'restaurantType' to populate fields here as well for consistency
+        const order = await Order.findById(orderId)
+            .populate('restaurantId', 'restaurantName address restaurantType')
+            .populate('customerId', 'fullName email');
+            
         if (!order) {
             return res.status(404).json({ success: false, message: "Order not found." });
         }
