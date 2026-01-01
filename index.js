@@ -84,7 +84,7 @@ app.use("/api/tables", tableRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/announcements", announcementsRoutes);
 app.use("/api/users", userRoutes);
-
+app.use('/api/promo', promoRoutes);
 // 4. Error Handling
 app.use((err, req, res, next) => {
   logger.error("Unhandled Error", { error: err.message, stack: err.stack });

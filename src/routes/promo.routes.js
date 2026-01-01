@@ -1,13 +1,13 @@
 import express from 'express';
 import { validateUser } from '../middleware/validateUser.js';
 import { applyPromoCode } from '../controllers/promoController.js';
-import featureFlags from '../config/featureFlags.js';
 
 const router = express.Router();
 
-if (featureFlags.ENABLE_OFFERS) {
-    router.use(validateUser);
-    router.post('/apply', applyPromoCode);
-}
+// Validates user session for all promo routes
+router.use(validateUser);
+
+// Route to apply promo code
+router.post('/apply', applyPromoCode);
 
 export default router;
