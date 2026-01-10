@@ -62,12 +62,22 @@ const restaurantSchema = new mongoose.Schema({
     min: 0,
     default: 0
   },
-  stripeSecretKey: {
+  // --- STRIPE CONNECT CHANGES START ---
+  stripeAccountId: {
     type: String,
-    required: [true, 'Stripe secret key is required.'],
-    trim: true,
-    select: false
+    required: false, // Created during registration
+    select: false    // Hide by default
   },
+  stripeAccountStatus: {
+    type: String,
+    enum: ['pending', 'restricted', 'active'],
+    default: 'pending'
+  },
+  stripeOnboardingComplete: {
+    type: Boolean,
+    default: false
+  },
+  // --- STRIPE CONNECT CHANGES END ---
   deliverySettings: {
     freeDeliveryRadius: {
       type: Number,

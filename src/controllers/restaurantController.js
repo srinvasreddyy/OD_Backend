@@ -5,7 +5,7 @@ import MenuItem from "../models/MenuItem.js";
 import Category from "../models/Category.js"; 
 import { getPaginationParams } from "../utils/paginationUtils.js";
 import logger from "../utils/logger.js";
-import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js"; 
+import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
 
 /**
  * @description Get a paginated list of all active and APPROVED restaurants with Distance calculation.
@@ -13,134 +13,83 @@ import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
  * @access Public
  */
 export const getRestaurants = async (req, res, next) => {
+    // ... [KEEP EXISTING LOGIC: Unchanged from original file] ...
+    // Note: The $project stage in the original file already excluded stripeSecretKey.
+    // It should now also exclude stripeAccountId by default (which it does via Schema select: false).
     try {
+        // [Existing implementation logic...]
         const { type, search, dishSearch, acceptsDining, lat, lng } = req.query;
         const { page, limit, skip } = getPaginationParams(req.query); 
 
         const pipeline = [];
-
-        // Stage 1: Match active restaurants
         const matchStage = { isActive: true };
         
-        // --- UPDATED LOGIC START ---
         if (type) {
             if (type === 'food_delivery') {
-                // Delivery tab should show both pure delivery and dining+delivery places
                 matchStage.restaurantType = { $in: ['food_delivery', 'food_delivery_and_dining'] };
             } else if (type === 'groceries') {
                 matchStage.restaurantType = 'groceries';
             } else if (type === 'food_delivery_and_dining') {
-                // For dining tab, we rely more on the acceptsDining flag, but we can respect the type too
                 matchStage.restaurantType = 'food_delivery_and_dining';
             } else {
-                // Fallback for any other specific type
                 matchStage.restaurantType = type;
             }
         }
-        // --- UPDATED LOGIC END ---
+        if (search) matchStage.restaurantName = { $regex: search, $options: 'i' };
 
-        // Search by Restaurant Name (Navbar Search)
-        if (search) {
-            matchStage.restaurantName = { $regex: search, $options: 'i' };
-        }
-
-        // Search by Dish or Category (In-Page Search)
         if (dishSearch) {
-            // 1. Find Categories matching the search term
-            const matchingCategories = await Category.find({
-                categoryName: { $regex: dishSearch, $options: 'i' }
-            }).select('_id');
+            const matchingCategories = await Category.find({ categoryName: { $regex: dishSearch, $options: 'i' } }).select('_id');
             const categoryIds = matchingCategories.map(c => c._id);
-
-            // 2. Find MenuItems matching the name OR the category
             const matchingMenuItems = await MenuItem.find({
-                $or: [
-                    { itemName: { $regex: dishSearch, $options: 'i' } },
-                    { categories: { $in: categoryIds } }
-                ]
+                $or: [{ itemName: { $regex: dishSearch, $options: 'i' } }, { categories: { $in: categoryIds } }]
             }).select('restaurantId');
-
             const restaurantIds = matchingMenuItems.map(m => m.restaurantId);
-
-            // 3. Filter restaurants to only those containing these items
             matchStage._id = { $in: restaurantIds };
         }
-
-        // Explicit Dining Filter (Used for 'Dining Out' section)
-        if (acceptsDining === 'true') {
-            matchStage.acceptsDining = true;
-        }
+        if (acceptsDining === 'true') matchStage.acceptsDining = true;
         
         pipeline.push({ $match: matchStage });
-
-        // Stage 2: Lookup to join with restaurantdocuments and filter for approved ones
         pipeline.push({
-            $lookup: {
-                from: "restaurantdocuments",
-                localField: "_id",
-                foreignField: "restaurantId",
-                as: "documents"
-            }
+            $lookup: { from: "restaurantdocuments", localField: "_id", foreignField: "restaurantId", as: "documents" }
         });
         pipeline.push({ $match: { "documents.verificationStatus": "approved" } });
         
-        // Stage 3: Count total matching documents before pagination
         const countPipeline = [...pipeline, { $count: "total" }];
         const countResult = await Restaurant.aggregate(countPipeline);
         const count = countResult[0]?.total || 0;
 
-        // Stage 4: Add sorting, skipping, and limiting for pagination
         pipeline.push({ $sort: { createdAt: -1 } });
         pipeline.push({ $skip: skip });
         pipeline.push({ $limit: limit });
         
-        // Stage 5: Project to shape the final output and exclude sensitive fields
         pipeline.push({
             $project: {
                 password: 0,
                 currentOTP: 0,
                 otpGeneratedAt: 0,
-                stripeSecretKey: 0,
+                stripeAccountId: 0, // Exclude connect ID
                 documents: 0
             }
         });
 
         const restaurants = await Restaurant.aggregate(pipeline);
 
-        // --- DISTANCE CALCULATION LOGIC ---
-        // Ensure inputs are parsed as floats to maintain high precision
         const userLat = parseFloat(lat);
         const userLng = parseFloat(lng);
         const hasLocation = !isNaN(userLat) && !isNaN(userLng);
 
         const processedRestaurants = restaurants.map(rest => {
             let distanceMiles = null;
-            let isDeliverable = true; // Default true if no location provided (fallback)
+            let isDeliverable = true; 
 
             if (hasLocation && rest.address?.coordinates?.coordinates) {
-                // MongoDB GeoJSON is [lng, lat]
                 const [restLng, restLat] = rest.address.coordinates.coordinates;
-                
-                // Calculate using full precision inputs
                 distanceMiles = getDistanceFromLatLonInMiles(userLat, userLng, restLat, restLng);
-                
-                // Round only for the final display value
                 distanceMiles = parseFloat(distanceMiles.toFixed(2)); 
-
                 const maxRadius = rest.deliverySettings?.maxDeliveryRadius || 0;
-                
-                // Determine if deliverable based on radius
-                // NOTE: We do NOT filter out here. We flag it so frontend can show it "half colored"
-                if (distanceMiles > maxRadius) {
-                    isDeliverable = false;
-                }
+                if (distanceMiles > maxRadius) isDeliverable = false;
             }
-
-            return {
-                ...rest,
-                distanceMiles,
-                isDeliverable
-            };
+            return { ...rest, distanceMiles, isDeliverable };
         });
 
         return res.status(200).json({
@@ -167,8 +116,9 @@ export const getRestaurantById = async (req, res, next) => {
             return res.status(404).json({ success: false, message: "Restaurant not found or has not been approved." });
         }
 
+        // Updated projection: Exclude stripeAccountId
         const restaurant = await Restaurant.findOne({ _id: id, isActive: true })
-            .select('-password -currentOTP -otpGeneratedAt -stripeSecretKey');
+            .select('-password -currentOTP -otpGeneratedAt -stripeAccountId');
 
         if (!restaurant) {
             return res.status(404).json({ success: false, message: "Restaurant not found or is currently inactive." });
@@ -180,7 +130,6 @@ export const getRestaurantById = async (req, res, next) => {
         next(error);
     }
 };
-
 export const updateRestaurantProfile = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
@@ -202,7 +151,7 @@ export const updateRestaurantProfile = async (req, res, next) => {
             restaurantId,
             { $set: updateData },
             { new: true, runValidators: true }
-        ).select('-password -currentOTP -otpGeneratedAt -stripeSecretKey');
+        ).select('-password -currentOTP -otpGeneratedAt -stripeAccountId');
 
         return res.status(200).json({ 
             success: true, 
@@ -215,12 +164,11 @@ export const updateRestaurantProfile = async (req, res, next) => {
         next(error);
     }
 };
-
 export const updateRestaurantSettings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
-        // Fix: Added acceptsDining to destructuring
-        const { handlingChargesPercentage, deliverySettings, stripeSecretKey, acceptsCashOnDelivery, acceptsDining } = req.body;
+        // REMOVED stripeSecretKey from destructuring
+        const { handlingChargesPercentage, deliverySettings, acceptsCashOnDelivery, acceptsDining } = req.body;
 
         const updateData = {};
         if (handlingChargesPercentage !== undefined) {
@@ -231,7 +179,6 @@ export const updateRestaurantSettings = async (req, res, next) => {
         }
 
         if (deliverySettings) {
-            // Add validation for deliverySettings object
             updateData.deliverySettings = deliverySettings;
         }
         
@@ -239,15 +186,12 @@ export const updateRestaurantSettings = async (req, res, next) => {
             updateData.acceptsCashOnDelivery = acceptsCashOnDelivery;
         }
 
-        // Fix: Added logic to save acceptsDining
         if (typeof acceptsDining === 'boolean') {
             updateData.acceptsDining = acceptsDining;
         }
 
-        if (stripeSecretKey) {
-            // In a real app, you'd encrypt this key before saving
-            updateData.stripeSecretKey = stripeSecretKey;
-        }
+        // Logic for stripeSecretKey removal: We do NOT allow updating it here anymore.
+        // It is managed via Stripe Connect OAuth/Onboarding.
 
         if (Object.keys(updateData).length === 0) {
             return res.status(400).json({ success: false, message: "No settings fields to update were provided." });
@@ -257,7 +201,7 @@ export const updateRestaurantSettings = async (req, res, next) => {
             restaurantId,
             { $set: updateData },
             { new: true, runValidators: true }
-        ).select('-password -currentOTP -otpGeneratedAt -stripeSecretKey');
+        ).select('-password -currentOTP -otpGeneratedAt -stripeAccountId');
 
         return res.status(200).json({ 
             success: true, 
@@ -270,7 +214,6 @@ export const updateRestaurantSettings = async (req, res, next) => {
         next(error);
     }
 };
-
 export const toggleRestaurantStatus = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
@@ -282,7 +225,7 @@ export const toggleRestaurantStatus = async (req, res, next) => {
             restaurantId,
             { $set: { isActive: newStatus } },
             { new: true }
-        ).select('-password -currentOTP -otpGeneratedAt -stripeSecretKey');
+        ).select('-password -currentOTP -otpGeneratedAt -stripeAccountId');
 
         return res.status(200).json({ 
             success: true, 
@@ -298,13 +241,10 @@ export const toggleRestaurantStatus = async (req, res, next) => {
 
 export const getRestaurantMe = async (req, res, next) => {
     try {
-        // req.restaurant is set by the validateRestaurant middleware
         const restaurant = await Restaurant.findById(req.restaurant._id);
-        
         if (!restaurant) {
             return res.status(404).json({ success: false, message: "Restaurant not found." });
         }
-
         return res.status(200).json({ success: true, data: restaurant });
     } catch (error) {
         logger.error("Error fetching my restaurant details", { error: error.message });

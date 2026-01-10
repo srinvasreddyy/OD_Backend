@@ -19,8 +19,10 @@ const requiredEnvVars = [
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'GOOGLE_CALLBACK_URL',
-  'CLIENT_SUCCESS_REDIRECT_URL',
-  'CLIENT_FAILURE_REDIRECT_URL',
+  'CLIENT_SUCCESS_REDIRECT_URL', // Customer App Success URL
+  'CLIENT_FAILURE_REDIRECT_URL', // Customer App Failure URL
+  'CLIENT_RESTAURANT_URL',       // Admin App URL (Required for Stripe Onboarding)
+  'STRIPE_SECRET_KEY',           // Platform Secret Key
   'STRIPE_WEBHOOK_SECRET',
 ];
 
@@ -28,7 +30,6 @@ const requiredEnvVars = [
 if (process.env.ENABLE_SUPER_ADMIN_REGISTRATION === 'true') {
   requiredEnvVars.push('SUPER_ADMIN_EMAIL', 'SUPER_ADMIN_FULL_NAME', 'SUPER_ADMIN_PASSWORD');
 }
-
 
 const checkEnvVars = () => {
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
@@ -70,6 +71,7 @@ const config = {
   clientUrls: {
     successRedirect: process.env.CLIENT_SUCCESS_REDIRECT_URL,
     failureRedirect: process.env.CLIENT_FAILURE_REDIRECT_URL,
+    restaurant: process.env.CLIENT_RESTAURANT_URL, // New field for Stripe Connect redirects
   },
   stripe: { 
     secretKey: process.env.STRIPE_SECRET_KEY,
@@ -79,9 +81,8 @@ const config = {
     enableOffers: process.env.ENABLE_OFFERS === 'true',
     enableBookingLocks: process.env.ENABLE_BOOKING_LOCKS === 'true',
     enableIdempotencyCheck: process.env.ENABLE_IDEMPOTENCY_CHECK === 'true',
-    enableSuperAdminRegistration: process.env.ENABLE_SUPER_ADMIN_REGISTRATION === 'true', // <-- NEW FLAG
+    enableSuperAdminRegistration: process.env.ENABLE_SUPER_ADMIN_REGISTRATION === 'true',
   },
-  // Super Admin Credentials (only used by the creation script)
   superAdmin: {
     email: process.env.SUPER_ADMIN_EMAIL,
     fullName: process.env.SUPER_ADMIN_FULL_NAME,

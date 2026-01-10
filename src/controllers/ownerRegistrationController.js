@@ -6,19 +6,24 @@ import RestaurantMedia from "../models/RestaurantMedia.js";
 import RestaurantTimings from "../models/RestaurantTimings.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
 import logger from "../utils/logger.js";
+import config from "../config/env.js";
 
-// --- Helper Functions for a Clean and Maintainable Controller ---
+// Initialize Stripe with Platform Secret Key
+const stripe = new Stripe(config.stripe.secretKey);
+
+// --- Helper Functions ---
 
 const validateAndParseInput = (body) => {
   const { 
     restaurantName, ownerFullName, email, password, restaurantType, phoneNumber,
-    address, timings, handlingChargesPercentage, stripeSecretKey, deliverySettings 
+    address, timings, handlingChargesPercentage, deliverySettings 
   } = body;
 
   const requiredFields = {
     restaurantName, ownerFullName, email, password, restaurantType, phoneNumber,
-    handlingChargesPercentage, stripeSecretKey, deliverySettings, address
+    handlingChargesPercentage, deliverySettings, address
   };
+  
   for (const [key, value] of Object.entries(requiredFields)) {
     if (!value) {
       const error = new Error(`Required field is missing: ${key}.`);
@@ -87,50 +92,7 @@ const handleFileUploads = async (files) => {
 // --- Main Controllers ---
 
 /**
- * @description Verifies a Stripe secret key by fetching account details.
- * @route POST /api/ownerRegistration/verify-stripe-key
- * @access Public
- */
-export const verifyStripeKey = async (req, res, next) => {
-  const { stripeSecretKey } = req.body;
-
-  if (!stripeSecretKey || !stripeSecretKey.startsWith('sk_')) {
-    return res.status(400).json({ success: false, message: "A valid Stripe secret key is required." });
-  }
-
-  try {
-    // Dynamically create a Stripe instance with the user-provided key
-    const stripe = new Stripe(stripeSecretKey);
-
-    // Retrieve account details associated with the key
-    const account = await stripe.accounts.retrieve();
-
-    // Sanitize the response to only send non-sensitive, verifiable information
-    const sanitizedAccountDetails = {
-      businessName: account.settings?.dashboard?.display_name || account.business_profile?.name || null,
-      country: account.country,
-      defaultCurrency: account.default_currency,
-    };
-
-    return res.status(200).json({
-      success: true,
-      message: "Stripe key is valid.",
-      data: sanitizedAccountDetails,
-    });
-
-  } catch (error) {
-    logger.error("Stripe key verification failed", { errorMessage: error.message });
-    // Stripe's specific error for an invalid key is an authentication error
-    if (error.type === 'StripeAuthenticationError') {
-      return res.status(401).json({ success: false, message: "Invalid Stripe API key provided." });
-    }
-    // For other potential errors (network issues, etc.), pass to the global handler
-    next(error);
-  }
-};
-
-/**
- * @description Registers a new restaurant owner and their establishment.
+ * @description Registers a new restaurant owner and creates a Stripe Connect Express account.
  * @route POST /api/ownerRegistration/register
  * @access Public
  */
@@ -140,7 +102,7 @@ export const registerOwner = async (req, res, next) => {
 
   try {
     const validatedData = validateAndParseInput(req.body);
-    const { email, password, parsedAddress, parsedTimings, parsedDeliverySettings, handlingChargesPercentage, stripeSecretKey, phoneNumber } = validatedData;
+    const { email, password, parsedAddress, parsedTimings, parsedDeliverySettings, handlingChargesPercentage, phoneNumber } = validatedData;
 
     const existingRestaurant = await Restaurant.findOne({ $or: [{ email }, { phoneNumber }] }).session(session);
     if (existingRestaurant) {
@@ -148,6 +110,18 @@ export const registerOwner = async (req, res, next) => {
       error.statusCode = 409;
       throw error;
     }
+    
+    // 1. Create Stripe Express Account
+    const account = await stripe.accounts.create({
+      type: 'express',
+      country: 'GB', // Defaulting to UK based on phone regex in model
+      email: email,
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+    });
+
     const uploadedUrls = await handleFileUploads(req.files);
     
     const restaurant = new Restaurant({
@@ -156,7 +130,8 @@ export const registerOwner = async (req, res, next) => {
       address: parsedAddress,
       deliverySettings: parsedDeliverySettings,
       handlingChargesPercentage,
-      stripeSecretKey,
+      stripeAccountId: account.id, // Save Connect Account ID
+      stripeAccountStatus: 'pending',
       phoneNumber
     });
     const restaurantId = restaurant._id;
@@ -203,13 +178,25 @@ export const registerOwner = async (req, res, next) => {
     }
     
     await Promise.all(dbPromises);
-
     await session.commitTransaction();
+
+    // 2. Generate Account Link for Onboarding
+    // Note: clientUrls.restaurant should point to the frontend restaurant dashboard
+    const refreshUrl = `${config.clientUrls.restaurant}/onboarding-refresh`;
+    const returnUrl = `${config.clientUrls.restaurant}/onboarding-complete`;
+
+    const accountLink = await stripe.accountLinks.create({
+      account: account.id,
+      refresh_url: refreshUrl,
+      return_url: returnUrl,
+      type: 'account_onboarding',
+    });
 
     res.status(201).json({
       success: true,
-      message: "Owner registered successfully. Your application is under review.",
+      message: "Owner registered successfully. Please complete Stripe onboarding.",
       restaurantId,
+      stripeOnboardingUrl: accountLink.url // Frontend should redirect user here
     });
 
   } catch (error) {

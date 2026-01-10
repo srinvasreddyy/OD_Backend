@@ -6,14 +6,13 @@ import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
+// Initialize Stripe with the Platform Secret Key
+const stripe = new Stripe(config.stripe.secretKey);
+
 const calculateDeliveryFee = (distance, settings, mode) => {
-    if (mode === 'pickup') return 0; // No fee for pickup
-    if (distance > settings.maxDeliveryRadius) {
-        return -1; 
-    }
-    if (distance <= settings.freeDeliveryRadius) {
-        return 0;
-    }
+    if (mode === 'pickup') return 0;
+    if (distance > settings.maxDeliveryRadius) return -1; 
+    if (distance <= settings.freeDeliveryRadius) return 0;
     const chargeableDistance = distance - settings.freeDeliveryRadius;
     return Math.round(chargeableDistance * settings.chargePerMile * 100) / 100;
 };
@@ -57,7 +56,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         
         const isPickup = orderType === 'pickup';
         
-        // Validation: Address is needed for delivery, optional for pickup but schema expects structure
         if (!isPickup && (!deliveryAddress || !deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates)) {
              return res.status(400).json({ success: false, message: "Delivery address with coordinates is required." });
         }
@@ -75,9 +73,18 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         }
         
         const restaurantId = cart[0].menuItemId.restaurantId;
-        const restaurant = await Restaurant.findById(restaurantId).select('+stripeSecretKey').lean();
-        if (!restaurant || !restaurant.stripeSecretKey) {
-            return res.status(500).json({ success: false, message: "This restaurant is currently not accepting online payments." });
+        // Fetch stripeAccountId (explicitly select it as it is select: false)
+        const restaurant = await Restaurant.findById(restaurantId)
+            .select('+stripeAccountId')
+            .lean();
+
+        if (!restaurant) {
+            return res.status(404).json({ success: false, message: "Restaurant not found." });
+        }
+
+        // Validate Stripe Connect Status
+        if (!restaurant.stripeAccountId) {
+            return res.status(500).json({ success: false, message: "This restaurant has not connected their payment account." });
         }
 
         const { subtotal, handlingCharge } = processCartForCheckout(cart, restaurant);
@@ -103,7 +110,12 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Cart total must be greater than zero." });
         }
 
-        const stripe = new Stripe(restaurant.stripeSecretKey);
+        // --- STRIPE SESSION CREATION ---
+        
+        // Convert to cents
+        const unitAmountCents = Math.round(totalAmount * 100);
+        // Application Fee (Handling Charge) in cents
+        const applicationFeeCents = Math.round(handlingCharge * 100);
 
         const line_items = [{
             price_data: {
@@ -112,7 +124,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
                     name: `Order from ${restaurant.restaurantName} (${isPickup ? 'Self Pickup' : 'Delivery'})`,
                     description: `Includes items, handling charges${isPickup ? '' : ', and delivery fee'}.`
                 },
-                unit_amount: Math.round(totalAmount * 100),
+                unit_amount: unitAmountCents,
             },
             quantity: 1,
         }];
@@ -123,6 +135,13 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             payment_method_types: ["card"],
             line_items,
             mode: "payment",
+            // Destination Charge Logic:
+            payment_intent_data: {
+                application_fee_amount: applicationFeeCents,
+                transfer_data: {
+                    destination: restaurant.stripeAccountId,
+                },
+            },
             success_url: `${config.clientUrls.successRedirect}?order_session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: config.clientUrls.failureRedirect,
             customer_email: user.email, 
@@ -132,7 +151,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
                 restaurantId: restaurantId.toString(),
                 idempotencyKey,
                 deliveryAddress: JSON.stringify(deliveryAddress || {}), 
-                orderType: isPickup ? 'pickup' : 'delivery' // Store order type in metadata
+                orderType: isPickup ? 'pickup' : 'delivery' 
             }
         });
 

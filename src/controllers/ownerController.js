@@ -1,8 +1,67 @@
-// OD_Backend/src/controllers/ownerController.js
 import mongoose from "mongoose";
+import Stripe from "stripe";
 import User from "../models/User.js";
 import Restaurant from "../models/Restaurant.js";
 import logger from "../utils/logger.js";
+import config from "../config/env.js";
+
+const stripe = new Stripe(config.stripe.secretKey);
+
+
+/**
+ * @description Generates a new onboarding link if the previous one expired or was incomplete.
+ * @route POST /api/owner/stripe-connect/onboarding-link
+ * @access Private (Owner)
+ */
+export const createStripeOnboardingLink = async (req, res, next) => {
+    try {
+        const restaurantId = req.restaurant._id;
+        const restaurant = await Restaurant.findById(restaurantId).select('+stripeAccountId');
+
+        if (!restaurant.stripeAccountId) {
+            // Should theoretically not happen if created via new registration flow
+            return res.status(400).json({ success: false, message: "No Stripe account ID found. Please contact support." });
+        }
+
+        const refreshUrl = `${config.clientUrls.restaurant}/onboarding-refresh`;
+        const returnUrl = `${config.clientUrls.restaurant}/onboarding-complete`;
+
+        const accountLink = await stripe.accountLinks.create({
+            account: restaurant.stripeAccountId,
+            refresh_url: refreshUrl,
+            return_url: returnUrl,
+            type: 'account_onboarding',
+        });
+
+        res.status(200).json({ success: true, url: accountLink.url });
+    } catch (error) {
+        logger.error("Error creating onboarding link", { error: error.message });
+        next(error);
+    }
+};
+
+/**
+ * @description Generates a login link for the Express Dashboard (to view payouts/earnings).
+ * @route POST /api/owner/stripe-connect/login-link
+ * @access Private (Owner)
+ */
+export const createStripeLoginLink = async (req, res, next) => {
+    try {
+        const restaurantId = req.restaurant._id;
+        const restaurant = await Restaurant.findById(restaurantId).select('+stripeAccountId');
+
+        if (!restaurant.stripeAccountId) {
+            return res.status(400).json({ success: false, message: "No Stripe account connected." });
+        }
+
+        const loginLink = await stripe.accounts.createLoginLink(restaurant.stripeAccountId);
+
+        res.status(200).json({ success: true, url: loginLink.url });
+    } catch (error) {
+        logger.error("Error creating login link", { error: error.message });
+        next(error);
+    }
+};
 
 /**
  * @description Creates a new delivery partner and associates them with the restaurant.
