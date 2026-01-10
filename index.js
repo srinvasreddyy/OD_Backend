@@ -31,25 +31,40 @@ import announcementsRoutes from "./src/routes/announcements.routes.js";
 import userRoutes from "./src/routes/user.routes.js";
 import webhookController from "./src/controllers/webhookController.js";
 
-// --- MISSING IMPORT ADDED HERE ---
 import User from "./src/models/User.js"; 
 
 dotenv.config();
 
 const app = express();
 
-// 1. Webhook Route (MUST be before express.json)
+// 1. Webhook Routes (MUST be before express.json)
+
+// Route A: For Payments (Events from "Your Account")
 app.post(
   "/api/payment/stripe-webhook",
   express.raw({ type: "application/json" }),
-  webhookController.handleStripeWebhook
+  webhookController.handlePaymentWebhook
+);
+
+// Route B: For Connect Onboarding (Events from "Connected Accounts")
+app.post(
+  "/api/payment/stripe-connect-webhook",
+  express.raw({ type: "application/json" }),
+  webhookController.handleConnectWebhook
 );
 
 // 2. Security & Parsing Middleware
 app.use(helmet());
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", config.clientUrls.customer, config.clientUrls.admin, config.clientUrls.restaurant],
+    origin: [
+        "http://localhost:5173", 
+        "http://localhost:5174", 
+        "http://localhost:5175", 
+        config.clientUrls.customer, 
+        config.clientUrls.admin, 
+        config.clientUrls.restaurant
+    ].filter(Boolean), 
     credentials: true,
   })
 );
@@ -85,6 +100,7 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/announcements", announcementsRoutes);
 app.use("/api/users", userRoutes);
 app.use('/api/promo', promoRoutes);
+
 // 4. Error Handling
 app.use((err, req, res, next) => {
   logger.error("Unhandled Error", { error: err.message, stack: err.stack });
@@ -105,7 +121,8 @@ const startServer = async () => {
     
     app.listen(PORT, () => {
       logger.info(`Server is running on port ${PORT}`);
-      logger.info(`To test Stripe webhooks, run: stripe listen --forward-to localhost:${PORT}/api/payment/stripe-webhook`);
+      logger.info(`Payment Webhook: /api/payment/stripe-webhook`);
+      logger.info(`Connect Webhook: /api/payment/stripe-connect-webhook`);
     });
   } catch (error) {
     logger.error("Failed to start server", { error: error.message });

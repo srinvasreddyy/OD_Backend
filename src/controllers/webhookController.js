@@ -7,6 +7,8 @@ import { calculateOrderPricing, validateCart, processOrderItems, calculateDelive
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
+// --- Helper Functions ---
+
 const handleCheckoutSessionCompleted = async (session) => {
     const {
         id: sessionId,
@@ -15,7 +17,7 @@ const handleCheckoutSessionCompleted = async (session) => {
         amount_total: stripeAmount,
     } = session;
     
-    // FIX 1: Safely Extract Metadata with defaults
+    // Safely Extract Metadata with defaults
     const { 
         userId, 
         restaurantId, 
@@ -41,7 +43,7 @@ const handleCheckoutSessionCompleted = async (session) => {
     const dbMongoSession = await mongoose.startSession();
     try {
         await dbMongoSession.withTransaction(async () => {
-            // FIX 2: Ensure cartType is valid before use to prevent "undefined" string literal
+            // Ensure cartType is valid before use
             const cartType = rawCartType && ['foodCart', 'groceriesCart'].includes(rawCartType) ? rawCartType : 'foodCart';
 
             const user = await User.findById(userId).populate({
@@ -59,7 +61,7 @@ const handleCheckoutSessionCompleted = async (session) => {
             
             const processedItems = await processOrderItems(cart);
             
-            // FIX 3: Robust JSON Parsing for Address
+            // Robust JSON Parsing for Address
             let deliveryAddress = {};
             try {
                 if (deliveryAddressJSON && deliveryAddressJSON !== "undefined") {
@@ -67,12 +69,9 @@ const handleCheckoutSessionCompleted = async (session) => {
                 }
             } catch (e) {
                 logger.warn("Webhook: Failed to parse deliveryAddress JSON", { sessionId, error: e.message });
-                // Do not throw, allow order to proceed as pickup or minimal address if possible
             }
             
-            // FIX 4: Robust Order Type Determination & Crash Prevention
-            // If orderType says 'delivery' but we have no coordinates, we MUST fall back to 'pickup'
-            // otherwise the delivery fee calculation will crash the transaction.
+            // Robust Order Type Determination
             let validOrderType = orderType || 'delivery';
             let deliveryFee = 0;
 
@@ -81,7 +80,6 @@ const handleCheckoutSessionCompleted = async (session) => {
                     logger.warn("Webhook: Order marked as 'delivery' but address coordinates are missing. Defaulting to 'pickup' to prevent data loss.", { sessionId });
                     validOrderType = 'pickup';
                 } else {
-                    // Safe to calculate fee
                     const [restLon, restLat] = restaurant.address.coordinates.coordinates;
                     const [userLon, userLat] = deliveryAddress.coordinates.coordinates;
                     deliveryFee = calculateDeliveryFee(restLat, restLon, userLat, userLon, restaurant.deliverySettings);
@@ -104,11 +102,11 @@ const handleCheckoutSessionCompleted = async (session) => {
                 restaurantId,
                 customerId: userId,
                 customerDetails: { 
-                    name: user.fullName || "Customer", // Fallback if name is missing
+                    name: user.fullName || "Customer", 
                     phoneNumber: user.phoneNumber 
                 },
                 orderType: validOrderType,
-                deliveryAddress: deliveryAddress || {}, // Ensure not null
+                deliveryAddress: deliveryAddress || {}, 
                 orderedItems: processedItems,
                 pricing,
                 appliedOffer,
@@ -134,32 +132,78 @@ const handleCheckoutSessionCompleted = async (session) => {
     }
 };
 
-const handleStripeWebhook = async (req, res) => {
+const handleAccountUpdated = async (account) => {
+    // Logic to activate restaurant when Stripe onboarding is done
+    // Check if details are submitted and charges are enabled
+    if (account.details_submitted && account.charges_enabled) {
+        try {
+            await Restaurant.findOneAndUpdate(
+                { stripeAccountId: account.id },
+                { stripeAccountStatus: 'active' }
+            );
+            logger.info(`Restaurant onboarding completed and activated for account: ${account.id}`);
+        } catch (error) {
+            logger.error('Error updating restaurant status from webhook:', error);
+        }
+    } else {
+        logger.info(`Account updated but not yet fully active: ${account.id}`);
+    }
+};
+
+// --- Main Exported Handlers ---
+
+// 1. Handler for "Your Account" Events (Payments)
+const handlePaymentWebhook = async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const stripe = new Stripe(config.stripe.secretKey);
     let event;
 
     try {
+        // Use the Standard Webhook Secret (for checkout.session.completed)
         event = stripe.webhooks.constructEvent(req.body, sig, config.stripe.webhookSecret);
     } catch (err) {
-        logger.error('Stripe webhook signature verification failed.', { error: err.message });
+        logger.error('Payment Webhook signature verification failed.', { error: err.message });
         return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    switch (event.type) {
-        case 'checkout.session.completed':
-            const session = event.data.object;
-            try {
-                await handleCheckoutSessionCompleted(session);
-            } catch (error) {
-                return res.status(500).json({ received: false, error: "Failed to process webhook." });
-            }
-            break;
-        default:
-            logger.info(`Unhandled Stripe event type ${event.type}`, { eventId: event.id });
+    if (event.type === 'checkout.session.completed') {
+        try {
+            await handleCheckoutSessionCompleted(event.data.object);
+        } catch (error) {
+            return res.status(500).json({ received: false, error: "Failed to process payment webhook." });
+        }
+    } else {
+        logger.info(`Unhandled Payment event type ${event.type}`, { eventId: event.id });
     }
 
     res.status(200).json({ received: true });
 };
 
-export default { handleStripeWebhook };
+// 2. Handler for "Connected Account" Events (Onboarding)
+const handleConnectWebhook = async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    const stripe = new Stripe(config.stripe.secretKey);
+    let event;
+
+    try {
+        // Use the NEW Connect Webhook Secret (for account.updated)
+        event = stripe.webhooks.constructEvent(req.body, sig, config.stripe.connectWebhookSecret);
+    } catch (err) {
+        logger.error('Connect Webhook signature verification failed.', { error: err.message });
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === 'account.updated') {
+        try {
+            await handleAccountUpdated(event.data.object);
+        } catch (error) {
+             return res.status(500).json({ received: false, error: "Failed to process connect webhook." });
+        }
+    } else {
+        logger.info(`Unhandled Connect event type ${event.type}`, { eventId: event.id });
+    }
+
+    res.status(200).json({ received: true });
+};
+
+export default { handlePaymentWebhook, handleConnectWebhook };

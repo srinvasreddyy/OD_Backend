@@ -23,7 +23,8 @@ const requiredEnvVars = [
   'CLIENT_FAILURE_REDIRECT_URL', // Customer App Failure URL
   'CLIENT_RESTAURANT_URL',       // Admin App URL (Required for Stripe Onboarding)
   'STRIPE_SECRET_KEY',           // Platform Secret Key
-  'STRIPE_WEBHOOK_SECRET',
+  'STRIPE_WEBHOOK_SECRET',       // Secret for "Your Account" events (Payments)
+  'STRIPE_CONNECT_WEBHOOK_SECRET', // Secret for "Connected Account" events (Onboarding)
 ];
 
 // Conditionally required vars for admin creation script
@@ -72,10 +73,13 @@ const config = {
     successRedirect: process.env.CLIENT_SUCCESS_REDIRECT_URL,
     failureRedirect: process.env.CLIENT_FAILURE_REDIRECT_URL,
     restaurant: process.env.CLIENT_RESTAURANT_URL, // New field for Stripe Connect redirects
+    customer: process.env.CLIENT_SUCCESS_REDIRECT_URL ? new URL(process.env.CLIENT_SUCCESS_REDIRECT_URL).origin : "http://localhost:5173", // Inferred base URL for CORS
+    admin: process.env.CLIENT_RESTAURANT_URL ? new URL(process.env.CLIENT_RESTAURANT_URL).origin : "http://localhost:5174", // Inferred base URL for CORS
   },
   stripe: { 
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+    connectWebhookSecret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET, // NEW: For Connect
   },
   featureFlags: {
     enableOffers: process.env.ENABLE_OFFERS === 'true',
