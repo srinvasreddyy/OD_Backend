@@ -19,15 +19,14 @@ const requiredEnvVars = [
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'GOOGLE_CALLBACK_URL',
-  'CLIENT_SUCCESS_REDIRECT_URL', // Customer App Success URL
-  'CLIENT_FAILURE_REDIRECT_URL', // Customer App Failure URL
-  'CLIENT_RESTAURANT_URL',       // Admin App URL (Required for Stripe Onboarding)
-  'STRIPE_SECRET_KEY',           // Platform Secret Key
-  'STRIPE_WEBHOOK_SECRET',       // Secret for "Your Account" events (Payments)
-  'STRIPE_CONNECT_WEBHOOK_SECRET', // Secret for "Connected Account" events (Onboarding)
+  'CLIENT_SUCCESS_REDIRECT_URL', 
+  'CLIENT_FAILURE_REDIRECT_URL', 
+  'CLIENT_RESTAURANT_URL',       
+  'STRIPE_SECRET_KEY',           
+  'STRIPE_WEBHOOK_SECRET',       // Standard Payments
+  'STRIPE_CONNECT_WEBHOOK_SECRET', // Connect Onboarding
 ];
 
-// Conditionally required vars for admin creation script
 if (process.env.ENABLE_SUPER_ADMIN_REGISTRATION === 'true') {
   requiredEnvVars.push('SUPER_ADMIN_EMAIL', 'SUPER_ADMIN_FULL_NAME', 'SUPER_ADMIN_PASSWORD');
 }
@@ -72,14 +71,14 @@ const config = {
   clientUrls: {
     successRedirect: process.env.CLIENT_SUCCESS_REDIRECT_URL,
     failureRedirect: process.env.CLIENT_FAILURE_REDIRECT_URL,
-    restaurant: process.env.CLIENT_RESTAURANT_URL, // New field for Stripe Connect redirects
-    customer: process.env.CLIENT_SUCCESS_REDIRECT_URL ? new URL(process.env.CLIENT_SUCCESS_REDIRECT_URL).origin : "http://localhost:5173", // Inferred base URL for CORS
-    admin: process.env.CLIENT_RESTAURANT_URL ? new URL(process.env.CLIENT_RESTAURANT_URL).origin : "http://localhost:5174", // Inferred base URL for CORS
+    restaurant: process.env.CLIENT_RESTAURANT_URL, 
+    customer: process.env.CLIENT_SUCCESS_REDIRECT_URL ? new URL(process.env.CLIENT_SUCCESS_REDIRECT_URL).origin : "http://localhost:5173", 
+    admin: process.env.CLIENT_RESTAURANT_URL ? new URL(process.env.CLIENT_RESTAURANT_URL).origin : "http://localhost:5174", 
   },
   stripe: { 
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
-    connectWebhookSecret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET, // NEW: For Connect
+    connectWebhookSecret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET, 
   },
   featureFlags: {
     enableOffers: process.env.ENABLE_OFFERS === 'true',

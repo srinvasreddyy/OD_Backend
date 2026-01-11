@@ -10,7 +10,7 @@ const orderSchema = new mongoose.Schema({
   },
   orderType: { 
       type: String, 
-      enum: ['delivery', 'pickup', 'dine_in'], // Updated enum
+      enum: ['delivery', 'pickup', 'dine_in'], 
       required: true 
   },
   deliveryAddress: {
@@ -43,11 +43,13 @@ const orderSchema = new mongoose.Schema({
   acceptanceStatus: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
   status: { 
       type: String, 
-      enum: ['placed', 'preparing', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'cancelled'], 
-      default: 'placed' 
+      // 'awaiting_payment' is crucial for the new flow
+      enum: ['awaiting_payment', 'placed', 'preparing', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'cancelled'], 
+      default: 'awaiting_payment' 
   },
   sessionId: String,
-  notes: String
+  notes: String,
+  idempotencyKey: String
 }, { timestamps: true });
 
 export default mongoose.model("Order", orderSchema);
