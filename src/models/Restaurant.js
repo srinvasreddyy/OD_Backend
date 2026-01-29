@@ -63,14 +63,18 @@ const restaurantSchema = new mongoose.Schema({
     default: 0
   },
   // --- STRIPE CONNECT CHANGES START ---
+  acceptsOnlineOrders: {
+    type: Boolean,
+    default: false
+  },
   stripeAccountId: {
     type: String,
-    required: false, // Created during registration
+    required: false, // Created during registration if online orders are enabled
     select: false    // Hide by default
   },
   stripeAccountStatus: {
     type: String,
-    enum: ['pending', 'restricted', 'active'],
+    enum: ['pending', 'restricted', 'active', 'none'], // Added 'none' for cash-only restaurants
     default: 'pending'
   },
   stripeOnboardingComplete: {

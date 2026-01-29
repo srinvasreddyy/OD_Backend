@@ -16,7 +16,7 @@ const stripe = new Stripe(config.stripe.secretKey);
 const validateAndParseInput = (body) => {
   const { 
     restaurantName, ownerFullName, email, password, restaurantType, phoneNumber,
-    address, timings, handlingChargesPercentage, deliverySettings 
+    address, timings, handlingChargesPercentage, deliverySettings, acceptsOnlineOrders 
   } = body;
 
   const requiredFields = {
@@ -43,6 +43,9 @@ const validateAndParseInput = (body) => {
     const parsedTimings = timings ? (typeof timings === 'string' ? JSON.parse(timings) : timings) : null;
     const parsedDeliverySettings = typeof deliverySettings === 'string' ? JSON.parse(deliverySettings) : deliverySettings;
     
+    // Parse boolean from string (FormData sends strings)
+    const parsedAcceptsOnlineOrders = acceptsOnlineOrders === 'true';
+
     if (!parsedAddress.coordinates || !Array.isArray(parsedAddress.coordinates.coordinates) || parsedAddress.coordinates.coordinates.length !== 2) {
         throw new Error("Address must include valid coordinates: [longitude, latitude].");
     }
@@ -51,7 +54,13 @@ const validateAndParseInput = (body) => {
         throw new Error("Delivery settings must include freeDeliveryRadius, chargePerMile, and maxDeliveryRadius.");
     }
     
-    return { ...body, parsedAddress, parsedTimings, parsedDeliverySettings };
+    return { 
+      ...body, 
+      parsedAddress, 
+      parsedTimings, 
+      parsedDeliverySettings,
+      parsedAcceptsOnlineOrders 
+    };
   } catch (e) {
     const error = new Error(`Invalid JSON format or missing data in address, timings, or deliverySettings. Details: ${e.message}`);
     error.statusCode = 400;
@@ -92,7 +101,7 @@ const handleFileUploads = async (files) => {
 // --- Main Controllers ---
 
 /**
- * @description Registers a new restaurant owner and creates a Stripe Connect Express account.
+ * @description Registers a new restaurant owner. Creates Stripe Connect Account only if enabled.
  * @route POST /api/ownerRegistration/register
  * @access Public
  */
@@ -102,7 +111,10 @@ export const registerOwner = async (req, res, next) => {
 
   try {
     const validatedData = validateAndParseInput(req.body);
-    const { email, password, parsedAddress, parsedTimings, parsedDeliverySettings, handlingChargesPercentage, phoneNumber } = validatedData;
+    const { 
+      email, password, parsedAddress, parsedTimings, parsedDeliverySettings, 
+      handlingChargesPercentage, phoneNumber, parsedAcceptsOnlineOrders 
+    } = validatedData;
 
     const existingRestaurant = await Restaurant.findOne({ $or: [{ email }, { phoneNumber }] }).session(session);
     if (existingRestaurant) {
@@ -111,27 +123,40 @@ export const registerOwner = async (req, res, next) => {
       throw error;
     }
     
-    // 1. Create Stripe Express Account
-    const account = await stripe.accounts.create({
-      type: 'express',
-      country: 'GB', // Defaulting to UK based on phone regex in model
-      email: email,
-      capabilities: {
-        card_payments: { requested: true },
-        transfers: { requested: true },
-      },
-    });
+    // Determine if we should create a Stripe Account
+    // IT MUST be enabled globally AND requested by the user
+    const shouldCreateStripeAccount = config.featureFlags.enableOnlinePayments && parsedAcceptsOnlineOrders;
+
+    let stripeAccountId = undefined;
+    let stripeAccountStatus = 'none';
+    let accountLink = null;
+
+    if (shouldCreateStripeAccount) {
+        // 1. Create Stripe Express Account
+        const account = await stripe.accounts.create({
+          type: 'express',
+          country: 'GB', // Defaulting to UK based on phone regex in model
+          email: email,
+          capabilities: {
+            card_payments: { requested: true },
+            transfers: { requested: true },
+          },
+        });
+        stripeAccountId = account.id;
+        stripeAccountStatus = 'pending';
+    }
 
     const uploadedUrls = await handleFileUploads(req.files);
     
     const restaurant = new Restaurant({
       ...validatedData,
+      acceptsOnlineOrders: shouldCreateStripeAccount, // Force false if global switch is off
       password: password,
       address: parsedAddress,
       deliverySettings: parsedDeliverySettings,
       handlingChargesPercentage,
-      stripeAccountId: account.id, // Save Connect Account ID
-      stripeAccountStatus: 'pending',
+      stripeAccountId: stripeAccountId, 
+      stripeAccountStatus: stripeAccountStatus,
       phoneNumber
     });
     const restaurantId = restaurant._id;
@@ -180,23 +205,30 @@ export const registerOwner = async (req, res, next) => {
     await Promise.all(dbPromises);
     await session.commitTransaction();
 
-    // 2. Generate Account Link for Onboarding
-    // Note: clientUrls.restaurant should point to the frontend restaurant dashboard
-    const refreshUrl = `${config.clientUrls.restaurant}/onboarding-refresh`;
-    const returnUrl = `${config.clientUrls.restaurant}/onboarding-complete`;
+    // 2. Generate Account Link for Onboarding (Only if Stripe Account Created)
+    let stripeOnboardingUrl = null;
+    
+    if (shouldCreateStripeAccount && stripeAccountId) {
+        // Note: clientUrls.restaurant should point to the frontend restaurant dashboard
+        const refreshUrl = `${config.clientUrls.restaurant}/onboarding-refresh`;
+        const returnUrl = `${config.clientUrls.restaurant}/onboarding-complete`;
 
-    const accountLink = await stripe.accountLinks.create({
-      account: account.id,
-      refresh_url: refreshUrl,
-      return_url: returnUrl,
-      type: 'account_onboarding',
-    });
+        accountLink = await stripe.accountLinks.create({
+          account: stripeAccountId,
+          refresh_url: refreshUrl,
+          return_url: returnUrl,
+          type: 'account_onboarding',
+        });
+        stripeOnboardingUrl = accountLink.url;
+    }
 
     res.status(201).json({
       success: true,
-      message: "Owner registered successfully. Please complete Stripe onboarding.",
+      message: stripeOnboardingUrl 
+        ? "Owner registered successfully. Please complete Stripe onboarding." 
+        : "Owner registered successfully.",
       restaurantId,
-      stripeOnboardingUrl: accountLink.url // Frontend should redirect user here
+      stripeOnboardingUrl // Can be null
     });
 
   } catch (error) {

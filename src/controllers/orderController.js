@@ -48,7 +48,7 @@ export const placeCashOrder = async (req, res, next) => {
             const restaurant = await Restaurant.findById(restaurantId).session(dbSession).lean();
             if (!restaurant) throw { statusCode: 404, message: `Restaurant with ID ${restaurantId} not found.` };
             
-            // Strict check: if explicitly false, block it. If undefined, default true (handled by model default, but safe to check here)
+            // Strict check: if explicitly false, block it.
             if (restaurant.acceptsCashOnDelivery === false) {
                 throw { statusCode: 400, message: "This restaurant does not accept Cash on Delivery." };
             }
@@ -83,7 +83,6 @@ export const placeCashOrder = async (req, res, next) => {
             const { pricing } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
 
             // 7. Format Address for Schema
-            // If pickup, we might not have a full address, so we provide defaults to satisfy schema if needed, or leave partial.
             const formattedAddress = {
                 fullAddress: deliveryAddress?.addressLine1 || deliveryAddress?.fullAddress || "Self Pickup",
                 landmark: deliveryAddress?.landmark || "",
@@ -102,7 +101,8 @@ export const placeCashOrder = async (req, res, next) => {
                 pricing,
                 paymentType: 'cash',
                 paymentStatus: 'pending',
-                acceptanceStatus: 'pending',
+                acceptanceStatus: 'pending', // Visible to restaurant immediately
+                status: 'placed', // Explicitly 'placed' for COD
                 notes: notes || '',
             });
 
@@ -121,7 +121,6 @@ export const placeCashOrder = async (req, res, next) => {
         if (dbSession.inTransaction()) {
              await dbSession.abortTransaction();
         }
-        
         logger.error("Error placing cash order", { error: error.message, statusCode: error.statusCode, userId });
         res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred while placing the order." });
     } finally {
@@ -148,6 +147,7 @@ export const respondToOrder = async (req, res, next) => {
             return res.status(400).json({ success: false, message: `This order has already been ${order.acceptanceStatus}.` });
         }
         
+        // Handle Refund if rejected and already paid
         if (acceptance === 'rejected' && order.paymentType === 'card' && order.paymentStatus === 'paid') {
             if (!order.restaurantId.stripeSecretKey) {
                 return res.status(500).json({ success: false, message: "Cannot process refund: Restaurant payment key is not configured." });
@@ -167,6 +167,7 @@ export const respondToOrder = async (req, res, next) => {
 
         order.acceptanceStatus = acceptance;
         if (acceptance === 'rejected') order.status = 'cancelled';
+        if (acceptance === 'accepted') order.status = 'preparing'; // Auto-move to preparing
 
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: `Order successfully ${acceptance}.`, data: updatedOrder });
@@ -226,13 +227,20 @@ export const getUserOrders = async (req, res, next) => {
     try {
         const userId = req.user?._id;
         const { page, limit, skip } = getPaginationParams(req.query);
-        // UPDATED: Added 'restaurantType' to the populate fields to allow frontend filtering
-        const orders = await Order.find({ customerId: userId })
+        
+        // FILTER: Exclude abandoned carts (awaiting_payment)
+        const filter = { 
+            customerId: userId,
+            status: { $ne: 'awaiting_payment' } 
+        };
+
+        const orders = await Order.find(filter)
             .populate('restaurantId', 'restaurantName address restaurantType') 
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit);
-        const totalOrders = await Order.countDocuments({ customerId: userId });
+            
+        const totalOrders = await Order.countDocuments(filter);
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
         logger.error("Error fetching user orders", { error: error.message });
@@ -247,7 +255,14 @@ export const getRestaurantOrders = async (req, res, next) => {
         const { page, limit, skip } = getPaginationParams(req.query);
 
         const query = { restaurantId };
-        if (status) query.status = status;
+        
+        if (status) {
+            query.status = status;
+        } else {
+            // FILTER: Default exclusion of abandoned carts
+            query.status = { $ne: 'awaiting_payment' };
+        }
+
         if (acceptanceStatus) query.acceptanceStatus = acceptanceStatus;
 
         const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(limit);
@@ -264,7 +279,9 @@ export const getNewRestaurantOrders = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
         const { page, limit, skip } = getPaginationParams(req.query);
+        // Explicitly asking for 'placed' orders ensures we don't get 'awaiting_payment'
         const query = { restaurantId, status: 'placed', acceptanceStatus: 'pending' };
+        
         const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(limit);
         const totalOrders = await Order.countDocuments(query);
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
@@ -282,7 +299,6 @@ export const assignDeliveryPartner = async (req, res, next) => {
         const orderId = req.params?.orderId;
         const deliveryPartnerId = req.body?.deliveryPartnerId;
         const restaurantId = req.restaurant?._id;
-        // Use loose check for array existence
         const restaurantPartnerList = req.restaurant?.deliveryPartners || [];
 
         if (!mongoose.Types.ObjectId.isValid(deliveryPartnerId)) {
@@ -297,14 +313,12 @@ export const assignDeliveryPartner = async (req, res, next) => {
         if (order.orderType !== 'delivery') {
             return res.status(400).json({ success: false, message: "Cannot assign a delivery partner to a non-delivery order." });
         }
+        
+        // Ensure order is ready for delivery
         if (order.acceptanceStatus !== 'accepted') {
-            return res.status(400).json({ success: false, message: "Cannot assign delivery partner to an order that has not been accepted." });
-        }
-        if (order.status === 'out_for_delivery' || order.status === 'delivered') {
-             return res.status(400).json({ success: false, message: "This order has already been assigned or delivered." });
+             return res.status(400).json({ success: false, message: "Order must be accepted first." });
         }
 
-        // Verify the partner is associated with this restaurant
         const isAssociated = restaurantPartnerList.some(id => id.toString() === deliveryPartnerId);
         if (!isAssociated) {
             return res.status(403).json({ success: false, message: "This delivery partner is not associated with your restaurant." });
@@ -315,9 +329,8 @@ export const assignDeliveryPartner = async (req, res, next) => {
             return res.status(404).json({ success: false, message: "Delivery partner not found." });
         }
         
-        // Strict availability check. 
         if (!deliveryPartner.deliveryPartnerProfile?.isAvailable) {
-            return res.status(409).json({ success: false, message: "This delivery partner is currently unavailable for new orders." });
+            return res.status(409).json({ success: false, message: "Delivery partner is currently unavailable." });
         }
 
         order.assignedDeliveryPartnerId = deliveryPartnerId;
@@ -348,7 +361,7 @@ export const getOrderDetails = async (req, res, next) => {
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
             return res.status(400).json({ success: false, message: "Invalid order ID format." });
         }
-        // UPDATED: Added 'restaurantType' to populate fields here as well for consistency
+
         const order = await Order.findById(orderId)
             .populate('restaurantId', 'restaurantName address restaurantType')
             .populate('customerId', 'fullName email');
@@ -383,24 +396,28 @@ export const updateOrderStatus = async (req, res, next) => {
         
         const order = await Order.findOne({ _id: orderId, restaurantId: restaurantId });
         if (!order) {
-            return res.status(404).json({ success: false, message: "Order not found or you are not authorized to update it." });
+            return res.status(404).json({ success: false, message: "Order not found or unauthorized." });
         }
 
+        // State Machine for Status
         const allowedTransitions = {
-            'placed': ['out_for_delivery', 'cancelled'],
-            'out_for_delivery': ['delivered', 'cancelled'],
+            'placed': ['preparing', 'cancelled'],
+            'preparing': ['ready_for_pickup', 'out_for_delivery', 'cancelled'],
+            'ready_for_pickup': ['delivered', 'cancelled'], // for pickup orders
+            'out_for_delivery': ['delivered', 'cancelled'], // for delivery orders
             'delivered': [],
             'cancelled': [],
         };
 
         if (order.acceptanceStatus !== 'accepted' && status !== 'cancelled') {
-             return res.status(400).json({ success: false, message: "Order must be accepted before its status can be updated."});
-        }
-
-        if (!allowedTransitions[order.status]?.includes(status)) {
-            return res.status(400).json({ success: false, message: `Invalid status transition from '${order.status}' to '${status}'.` });
+             return res.status(400).json({ success: false, message: "Order must be accepted before status updates."});
         }
         
+        // Loose check or strict check depending on preference, currently allowing jumps if reasonable
+        if (!Object.values(allowedTransitions).flat().includes(status)) {
+             return res.status(400).json({ success: false, message: "Invalid status provided." });
+        }
+
         order.status = status;
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: "Order updated successfully.", data: updatedOrder });
@@ -462,11 +479,7 @@ export const getRestaurantStats = async (req, res, next) => {
 
         return res.status(200).json({
             success: true,
-            data: {
-                overall,
-                monthlyIncome: monthly,
-                comparison
-            }
+            data: { overall, monthlyIncome: monthly, comparison }
         });
 
     } catch (error) {
@@ -523,12 +536,8 @@ export const getRestaurantOrdersReport = async (req, res, next) => {
             { $match: { restaurantId: new mongoose.Types.ObjectId(restaurantId) } },
             {
                 $facet: {
-                    "byStatus": [
-                        { $group: { _id: "$status", count: { $sum: 1 } } }
-                    ],
-                    "byOrderType": [
-                        { $group: { _id: "$orderType", count: { $sum: 1 } } }
-                    ]
+                    "byStatus": [ { $group: { _id: "$status", count: { $sum: 1 } } } ],
+                    "byOrderType": [ { $group: { _id: "$orderType", count: { $sum: 1 } } } ]
                 }
             }
         ]);

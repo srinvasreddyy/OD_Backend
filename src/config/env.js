@@ -85,6 +85,7 @@ const config = {
     enableBookingLocks: process.env.ENABLE_BOOKING_LOCKS === 'true',
     enableIdempotencyCheck: process.env.ENABLE_IDEMPOTENCY_CHECK === 'true',
     enableSuperAdminRegistration: process.env.ENABLE_SUPER_ADMIN_REGISTRATION === 'true',
+    enableOnlinePayments: process.env.ENABLE_ONLINE_PAYMENTS === 'true', // ADDED THIS
   },
   superAdmin: {
     email: process.env.SUPER_ADMIN_EMAIL,

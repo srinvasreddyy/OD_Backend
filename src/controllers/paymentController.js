@@ -15,6 +15,11 @@ const generateOrderNumber = () => `ORD-${Date.now().toString().slice(-6)}-${Math
 
 export const createOrderCheckoutSession = async (req, res, next) => {
     try {
+        // 0. Global Feature Flag Check
+        if (!config.featureFlags.enableOnlinePayments) {
+            return res.status(403).json({ success: false, message: "Online payments are currently disabled." });
+        }
+
         const userId = req.user._id;
         const { cartType, deliveryAddress, orderType } = req.body; 
 
@@ -47,6 +52,11 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         const restaurant = await Restaurant.findById(restaurantId).select('+stripeAccountId').lean();
         if (!restaurant) {
             return res.status(404).json({ success: false, message: "Restaurant not found." });
+        }
+
+        // Check if restaurant accepts online orders
+        if (!restaurant.acceptsOnlineOrders) {
+             return res.status(403).json({ success: false, message: "This restaurant does not accept online payments." });
         }
 
         if (!restaurant.stripeAccountId) {
