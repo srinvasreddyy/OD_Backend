@@ -35,6 +35,7 @@ const orderSchema = new mongoose.Schema({
       subtotal: Number,
       deliveryFee: Number,
       handlingCharge: Number,
+      platformFee: Number, // Added field
       discountAmount: Number,
       totalAmount: Number
   },

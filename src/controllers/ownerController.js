@@ -9,20 +9,45 @@ const stripe = new Stripe(config.stripe.secretKey);
 
 
 /**
- * @description Generates a new onboarding link if the previous one expired or was incomplete.
+ * @description Generates a new onboarding link. Creates the Stripe account if it doesn't exist yet.
  * @route POST /api/owner/stripe-connect/onboarding-link
  * @access Private (Owner)
  */
 export const createStripeOnboardingLink = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant._id;
-        const restaurant = await Restaurant.findById(restaurantId).select('+stripeAccountId');
+        // Fetch restaurant with stripeAccountId (selected explicitly as it might be hidden)
+        let restaurant = await Restaurant.findById(restaurantId).select('+stripeAccountId');
 
+        // 1. Lazy Creation: If no Stripe Account ID exists, create one now.
         if (!restaurant.stripeAccountId) {
-            // Should theoretically not happen if created via new registration flow
-            return res.status(400).json({ success: false, message: "No Stripe account ID found. Please contact support." });
+            logger.info(`Stripe Account missing for restaurant ${restaurantId}. Creating one now...`);
+            
+            try {
+                // FIXED PROCESS: 
+                // 1. Use 'express' type.
+                // 2. Remove hardcoded 'capabilities' (card_payments, transfers).
+                //    These are now managed in your Stripe Dashboard > Connect > Settings.
+                //    This prevents mismatch errors between Code and Dashboard.
+                const account = await stripe.accounts.create({
+                    type: 'express',
+                    country: 'GB', // Default to GB
+                    email: req.restaurant.email, // Use restaurant email
+                });
+
+                restaurant.stripeAccountId = account.id;
+                restaurant.stripeAccountStatus = 'pending';
+                await restaurant.save();
+                
+                logger.info(`Created new Stripe Account ${account.id} for restaurant ${restaurantId}`);
+            } catch (stripeError) {
+                logger.error("Failed to create Stripe account on-the-fly", { error: stripeError.message });
+                // Return the specific error from Stripe for easier debugging
+                return res.status(500).json({ success: false, message: `Stripe Error: ${stripeError.message}` });
+            }
         }
 
+        // 2. Generate the Account Link
         const refreshUrl = `${config.clientUrls.restaurant}/onboarding-refresh`;
         const returnUrl = `${config.clientUrls.restaurant}/onboarding-complete`;
 
@@ -30,7 +55,7 @@ export const createStripeOnboardingLink = async (req, res, next) => {
             account: restaurant.stripeAccountId,
             refresh_url: refreshUrl,
             return_url: returnUrl,
-            type: 'account_onboarding',
+            type: 'account_onboarding', 
         });
 
         res.status(200).json({ success: true, url: accountLink.url });
@@ -64,25 +89,71 @@ export const createStripeLoginLink = async (req, res, next) => {
 };
 
 /**
+ * @description Manually syncs the local DB status with Stripe.
+ * @route POST /api/owner/stripe-connect/sync
+ */
+export const syncStripeAccount = async (req, res, next) => {
+    try {
+        const restaurantId = req.restaurant._id;
+        const restaurant = await Restaurant.findById(restaurantId).select('+stripeAccountId');
+
+        if (!restaurant.stripeAccountId) {
+            return res.status(400).json({ success: false, message: "No Stripe account found." });
+        }
+
+        // 1. Fetch latest status from Stripe
+        const account = await stripe.accounts.retrieve(restaurant.stripeAccountId);
+
+        // 2. Determine status
+        const isDetailsSubmitted = account.details_submitted;
+        const isChargesEnabled = account.charges_enabled;
+
+        // 3. Update Database accordingly
+        if (isDetailsSubmitted && isChargesEnabled) {
+            restaurant.stripeAccountStatus = 'active';
+            // Also update the fields you mentioned were missing
+            restaurant.stripeOnboardingComplete = true; 
+            if (config.featureFlags.enableOnlinePayments) {
+                restaurant.acceptsOnlineOrders = true;
+            }
+            await restaurant.save();
+            
+            return res.status(200).json({ 
+                success: true, 
+                status: 'active', 
+                message: "Account is fully active." 
+            });
+        } 
+        
+        return res.status(200).json({ 
+            success: true, 
+            status: 'pending', 
+            message: "Stripe account is still pending verification." 
+        });
+
+    } catch (error) {
+        logger.error("Error syncing Stripe account", { error: error.message });
+        next(error);
+    }
+};
+
+/**
  * @description Creates a new delivery partner and associates them with the restaurant.
  * @route POST /api/owner/delivery-partners
  * @access Private (Restaurant Owner)
  */
 export const createDeliveryPartner = async (req, res, next) => {
     const  restaurantId  = req.restaurant?._id;
-    // UPDATED: Destructure username and password instead of email
     const { fullName, username, password, phoneNumber, deliveryPartnerProfile } = req.body;
     const session = await mongoose.startSession();
 
     try {
-        // UPDATED: Validation for username and password
         if (!fullName || !username || !password || !phoneNumber) {
             return res.status(400).json({ success: false, message: "Full name, username, password, and phone number are required." });
         }
         
         let newPartner;
         await session.withTransaction(async () => {
-            // UPDATED: Check for existing username instead of email
             const existingUser = await User.findOne({ username }).session(session);
             if (existingUser) {
                 const err = new Error("A user with this username already exists.");
@@ -92,20 +163,19 @@ export const createDeliveryPartner = async (req, res, next) => {
 
             const partner = new User({
                 fullName,
-                username, // Set username
-                password, // Set password (will be hashed by User model pre-save)
+                username, 
+                password, 
                 phoneNumber,
                 userType: 'delivery_partner',
-                restaurantId, // Link user to the restaurant
+                restaurantId, 
                 deliveryPartnerProfile: {
                     ...(deliveryPartnerProfile || {}),
-                    isAvailable: false // Default to not available
+                    isAvailable: false 
                 }
             });
 
             const savedPartner = await partner.save({ session });
             
-            // Add the new partner's ID to the restaurant's list of partners
             await Restaurant.findByIdAndUpdate(restaurantId, 
                 { $push: { deliveryPartners: savedPartner._id } },
                 { session }
@@ -113,9 +183,8 @@ export const createDeliveryPartner = async (req, res, next) => {
             newPartner = savedPartner;
         });
 
-        // Exclude sensitive info from the response
         const responsePartner = newPartner.toObject();
-        delete responsePartner.password; // Ensure password is not returned
+        delete responsePartner.password; 
         delete responsePartner.currentOTP;
 
         return res.status(201).json({
@@ -143,7 +212,6 @@ export const getDeliveryPartners = async (req, res, next) => {
         const restaurant = await Restaurant.findById(restaurantId)
             .populate({
                 path: 'deliveryPartners',
-                // UPDATED: Select username instead of email
                 select: 'fullName username phoneNumber deliveryPartnerProfile isActive'
             })
             .lean();
@@ -178,14 +246,12 @@ export const deleteDeliveryPartner = async (req, res, next) => {
         }
 
         await session.withTransaction(async () => {
-            // 1. Remove from Restaurant's list
             await Restaurant.updateOne(
                 { _id: restaurantId },
                 { $pull: { deliveryPartners: partnerId } },
                 { session }
             );
 
-            // 2. Check and Delete the User document
             const partner = await User.findOneAndDelete(
                 { _id: partnerId, restaurantId, userType: 'delivery_partner' },
                 { session }
@@ -227,12 +293,10 @@ export const updateDeliveryPartner = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Invalid partner ID format." });
         }
 
-        // We do NOT include 'username' or 'password' here to keep it simple.
         const updateData = {};
         if (fullName) updateData.fullName = fullName;
         if (phoneNumber) updateData.phoneNumber = phoneNumber;
         
-        // Handle nested profile updates properly
         if (deliveryPartnerProfile) {
             if (deliveryPartnerProfile.vehicleType) {
                 updateData["deliveryPartnerProfile.vehicleType"] = deliveryPartnerProfile.vehicleType;

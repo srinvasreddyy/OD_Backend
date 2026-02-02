@@ -1,5 +1,4 @@
 import express from "express";
-import mongoose from "mongoose";
 import dotenv from "dotenv";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -11,9 +10,8 @@ import config from "./src/config/env.js";
 import connectDB from "./src/config/db.js";
 import passport from "passport";
 import "./src/config/passport-setup.js";
-import createSuperAdmin from "./src/scripts/createSuperAdmin.js";
 
-// --- ROUTES ---
+// --- ROUTES IMPORTS ---
 import authRoutes from "./src/routes/authRoutes.js";
 import restaurantRoutes from "./src/routes/restaurant.routes.js";
 import adminRoutes from "./src/routes/admin.routes.js";
@@ -31,15 +29,18 @@ import announcementsRoutes from "./src/routes/announcements.routes.js";
 import userRoutes from "./src/routes/user.routes.js";
 import webhookController from "./src/controllers/webhookController.js";
 
-import User from "./src/models/User.js"; 
-
 dotenv.config();
 
 const app = express();
 
-// 1. Webhook Routes (MUST be before express.json)
+// ==========================================
+// 1. STRIPE WEBHOOK ROUTES
+// ==========================================
+// IMPORTANT: These routes must be defined BEFORE `express.json()` 
+// because Stripe needs the raw request body to verify signatures.
 
-// Route A: For Payments (Events from "Your Account")
+// Route A: For Standard Payments (Events from "Your Account")
+// Endpoint: https://your-domain.com/api/payment/stripe-webhook
 app.post(
   "/api/payment/stripe-webhook",
   express.raw({ type: "application/json" }),
@@ -47,14 +48,18 @@ app.post(
 );
 
 // Route B: For Connect Onboarding (Events from "Connected Accounts")
+// Endpoint: https://your-domain.com/api/payment/stripe-connect-webhook
 app.post(
   "/api/payment/stripe-connect-webhook",
   express.raw({ type: "application/json" }),
   webhookController.handleConnectWebhook
 );
 
-// 2. Security & Parsing Middleware
+// ==========================================
+// 2. MIDDLEWARE (Parsing & Security)
+// ==========================================
 app.use(helmet());
+
 app.use(
   cors({
     origin: [
@@ -68,6 +73,8 @@ app.use(
     credentials: true,
   })
 );
+
+// Standard parsers for all other routes
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -80,10 +87,12 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Passport
+// Authentication Middleware
 app.use(passport.initialize());
 
-// 3. Routes
+// ==========================================
+// 3. API ROUTES
+// ==========================================
 app.use("/api/auth", authRoutes);
 app.use("/api/restaurants", restaurantRoutes);
 app.use("/api/admin", adminRoutes);
@@ -93,15 +102,16 @@ app.use("/api/menu-items", menuItemRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/delivery", deliveryRoutes);
-app.use("/api/payment", paymentRoutes);
+app.use("/api/payment", paymentRoutes); // Note: Webhooks handled above; this handles checkout sessions
 app.use("/api/promos", promoRoutes);
 app.use("/api/tables", tableRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/announcements", announcementsRoutes);
 app.use("/api/users", userRoutes);
-app.use('/api/promo', promoRoutes);
 
-// 4. Error Handling
+// ==========================================
+// 4. ERROR HANDLING
+// ==========================================
 app.use((err, req, res, next) => {
   logger.error("Unhandled Error", { error: err.message, stack: err.stack });
   res.status(err.status || 500).json({
@@ -110,19 +120,19 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 5. Start Server
+// ==========================================
+// 5. SERVER START
+// ==========================================
 const PORT = config.port || 5000;
 
 const startServer = async () => {
   try {
     await connectDB();
     
-    // await createSuperAdmin();
-    
     app.listen(PORT, () => {
       logger.info(`Server is running on port ${PORT}`);
-      logger.info(`Payment Webhook: /api/payment/stripe-webhook`);
-      logger.info(`Connect Webhook: /api/payment/stripe-connect-webhook`);
+      logger.info(`Payment Webhook Active: /api/payment/stripe-webhook`);
+      logger.info(`Connect Webhook Active: /api/payment/stripe-connect-webhook`);
     });
   } catch (error) {
     logger.error("Failed to start server", { error: error.message });

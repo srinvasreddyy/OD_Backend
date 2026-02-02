@@ -257,7 +257,12 @@ export const getRestaurantOrders = async (req, res, next) => {
         const query = { restaurantId };
         
         if (status) {
-            query.status = status;
+            // Support comma-separated statuses for multi-tab filtering
+            if (status.includes(',')) {
+                query.status = { $in: status.split(',') };
+            } else {
+                query.status = status;
+            }
         } else {
             // FILTER: Default exclusion of abandoned carts
             query.status = { $ne: 'awaiting_payment' };

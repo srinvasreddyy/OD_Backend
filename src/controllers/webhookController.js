@@ -65,7 +65,11 @@ const handleAccountUpdated = async (account) => {
         try {
             await Restaurant.findOneAndUpdate(
                 { stripeAccountId: account.id },
-                { stripeAccountStatus: 'active' }
+                { 
+                    stripeAccountStatus: 'active',
+                    stripeOnboardingComplete: true, // <--- Ensure this flag is set
+                    acceptsOnlineOrders: true       // <--- Enable online orders automatically
+                }
             );
             logger.info(`Restaurant onboarding completed: ${account.id}`);
         } catch (error) {

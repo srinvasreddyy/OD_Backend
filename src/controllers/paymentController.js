@@ -64,7 +64,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         }
 
         // 3. Process Cart Items (Snapshot current price/availability)
-        // This ensures the price is locked in at the moment of checkout button click
         const processedItems = await processOrderItems(cart);
         
         // 4. Calculate Delivery Fee
@@ -79,20 +78,36 @@ export const createOrderCheckoutSession = async (req, res, next) => {
                  return res.status(400).json({ success: false, message: `Address is outside the delivery radius of ${restaurant.deliverySettings.maxDeliveryRadius} miles.` });
             }
             
-            // Calculate fee manually based on settings or use utility if strictly available
-            // Logic: if > free radius, charge per mile
+            // Calculate fee manually based on settings
             if (restaurant.deliverySettings && distance > restaurant.deliverySettings.freeDeliveryRadius) {
                 const chargeable = distance - restaurant.deliverySettings.freeDeliveryRadius;
                 deliveryFee = Math.round(chargeable * restaurant.deliverySettings.chargePerMile * 100) / 100;
             }
         }
 
-        // 5. Calculate Final Pricing
+        // 5. Calculate Final Pricing (Includes new Platform Fee)
         const { pricing, appliedOffer } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
         
         if (pricing.totalAmount <= 0) {
             return res.status(400).json({ success: false, message: "Order total must be greater than zero." });
         }
+
+        // --- PAYMENT SPLIT LOGIC START ---
+        
+        // Total amount charged to the customer card (Total = Subtotal + Handling + Delivery + PlatformFee - Discount)
+        const totalAmountCents = Math.round(pricing.totalAmount * 100);
+
+        // Platform keeps: ONLY the Platform Fee (£0.50). 
+        // NOTE: Standard Stripe Connect fees are typically paid by the Platform from this amount.
+        const platformKeepAmount = pricing.platformFee;
+        const applicationFeeAmountCents = Math.round(platformKeepAmount * 100);
+
+        // Validation to prevent negative transfers or Stripe errors
+        if (applicationFeeAmountCents < 0 || applicationFeeAmountCents > totalAmountCents) {
+             return res.status(500).json({ success: false, message: "Payment calculation error: Application fee invalid." });
+        }
+
+        // --- PAYMENT SPLIT LOGIC END ---
 
         // 6. Create "Awaiting Payment" Order in Database
         const idempotencyKey = config.featureFlags.enableIdempotencyCheck ? uuidv4() : null;
@@ -108,11 +123,11 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             orderType: isPickup ? 'pickup' : 'delivery',
             deliveryAddress: deliveryAddress || {}, 
             orderedItems: processedItems, // Saved snapshot of items
-            pricing,
+            pricing, // Includes platformFee
             appliedOffer,
             paymentType: 'card',
             paymentStatus: 'pending',
-            status: 'awaiting_payment', // Logic flag: not yet visible to restaurant
+            status: 'awaiting_payment',
             acceptanceStatus: 'pending',
             idempotencyKey
         });
@@ -120,7 +135,6 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         await newOrder.save();
 
         // 7. Create Stripe Session
-        // We pass the newOrder._id to metadata so the webhook knows which order to update
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ["card"],
             line_items: [{
@@ -130,13 +144,15 @@ export const createOrderCheckoutSession = async (req, res, next) => {
                         name: `Order ${newOrder.orderNumber}`,
                         description: `From ${restaurant.restaurantName} (${isPickup ? 'Pickup' : 'Delivery'})`
                     },
-                    unit_amount: Math.round(pricing.totalAmount * 100), // Amount in cents
+                    unit_amount: totalAmountCents, // Total Customer Pays
                 },
                 quantity: 1,
             }],
             mode: "payment",
             payment_intent_data: {
-                application_fee_amount: Math.round(pricing.handlingCharge * 100),
+                // The amount the platform keeps (0.50 GBP).
+                // Stripe automatically transfers the REST (Subtotal + Delivery + Handling) to the destination.
+                application_fee_amount: applicationFeeAmountCents,
                 transfer_data: {
                     destination: restaurant.stripeAccountId,
                 },
@@ -145,7 +161,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             cancel_url: config.clientUrls.failureRedirect,
             customer_email: user.email, 
             metadata: {
-                orderId: newOrder._id.toString(), // CRITICAL: Link session to our DB order
+                orderId: newOrder._id.toString(),
                 cartType: cartField,
                 userId: userId.toString()
             }

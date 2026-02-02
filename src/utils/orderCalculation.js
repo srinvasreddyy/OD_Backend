@@ -1,6 +1,9 @@
 import MenuItem from '../models/MenuItem.js';
 import { getDistanceFromLatLonInMiles } from './locationUtils.js';
 
+// Define the fixed platform fee
+const PLATFORM_FEE_GBP = 0.50;
+
 export const validateCart = (cart) => {
     if (!cart || cart.length === 0) {
         return { error: "Cannot process an empty cart.", restaurantId: null };
@@ -104,6 +107,7 @@ export const calculateDeliveryFee = (lat1, lon1, lat2, lon2, settings) => {
 export const calculateOrderPricing = (processedItems, deliveryFee, restaurant, offerDetails = null) => {
     const subtotal = processedItems.reduce((acc, item) => acc + item.itemTotal, 0);
     const handlingCharge = subtotal * ((restaurant.handlingChargesPercentage || 0) / 100);
+    const platformFee = PLATFORM_FEE_GBP;
     
     let discountAmount = 0;
     let finalDeliveryFee = Math.max(0, deliveryFee);
@@ -126,17 +130,20 @@ export const calculateOrderPricing = (processedItems, deliveryFee, restaurant, o
         }
     }
     
+    // Ensure discount doesn't exceed the subtotal + handling (preserving platform/delivery fees)
     const maxApplicableDiscount = subtotal + handlingCharge;
     if (discountAmount > maxApplicableDiscount) {
         discountAmount = maxApplicableDiscount;
     }
     
-    const totalAmount = subtotal + handlingCharge + finalDeliveryFee - discountAmount;
+    // Formula: Subtotal + Handling + Delivery + PlatformFee - Discount
+    const totalAmount = subtotal + handlingCharge + finalDeliveryFee + platformFee - discountAmount;
 
     const pricing = { 
         subtotal: Math.round(subtotal * 100) / 100,
         deliveryFee: Math.round(finalDeliveryFee * 100) / 100,
         handlingCharge: Math.round(handlingCharge * 100) / 100, 
+        platformFee: Math.round(platformFee * 100) / 100,
         discountAmount: Math.round(discountAmount * 100) / 100,
         totalAmount: Math.round(totalAmount * 100) / 100 
     };
