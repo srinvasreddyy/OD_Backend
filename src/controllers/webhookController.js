@@ -19,7 +19,9 @@ const handleCheckoutSessionCompleted = async (session) => {
     }
 
     if (!orderId) {
-        logger.error(`Webhook: Missing orderId in metadata for session ${sessionId}`);
+        // NOTE: This might be a Booking session (from bookingController) not an Order session
+        // Booking Controller logic usually handles success via client-side or specific webhook logic if expanded
+        logger.info(`Webhook: No orderId in metadata for session ${sessionId}. Might be a Booking or other type.`);
         return;
     }
 
@@ -67,8 +69,8 @@ const handleAccountUpdated = async (account) => {
                 { stripeAccountId: account.id },
                 { 
                     stripeAccountStatus: 'active',
-                    stripeOnboardingComplete: true, // <--- Ensure this flag is set
-                    acceptsOnlineOrders: true       // <--- Enable online orders automatically
+                    stripeOnboardingComplete: true, // Ensure this flag is set
+                    acceptsOnlineOrders: true       // Enable online orders automatically
                 }
             );
             logger.info(`Restaurant onboarding completed: ${account.id}`);
@@ -80,7 +82,7 @@ const handleAccountUpdated = async (account) => {
 
 // --- Main Exported Handlers ---
 
-// 1. Handler for Payment Events (Your Account)
+// 1. Handler for Payment Events (Platform Events: Orders)
 const handlePaymentWebhook = async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const stripe = new Stripe(config.stripe.secretKey);
@@ -104,7 +106,7 @@ const handlePaymentWebhook = async (req, res) => {
     res.status(200).json({ received: true });
 };
 
-// 2. Handler for Connect Events (Connected Accounts)
+// 2. Handler for Connect Events (Connected Account Events)
 const handleConnectWebhook = async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const stripe = new Stripe(config.stripe.secretKey);
@@ -124,6 +126,10 @@ const handleConnectWebhook = async (req, res) => {
              return res.status(500).json({ received: false, error: "Processing failed" });
         }
     }
+
+    // NOTE: If you are using Direct Charges (like in Bookings), 'checkout.session.completed' 
+    // might arrive here depending on your Webhook configuration in Stripe Dashboard.
+    // If so, you would handle booking confirmation here similar to order confirmation.
 
     res.status(200).json({ received: true });
 };

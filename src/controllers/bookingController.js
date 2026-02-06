@@ -8,7 +8,6 @@ import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
-// Helper to check continuity of time slots
 const areSlotsSequential = (slots) => {
     if (!slots || slots.length < 2) return true;
     const hours = slots.map(s => parseInt(s.split(':')[0], 10)).sort((a,b) => a - b);
@@ -18,8 +17,6 @@ const areSlotsSequential = (slots) => {
     return true;
 };
 
-// --- Controller Functions ---
-
 export const getAvailableSlots = async (req, res, next) => {
     try {
         const { restaurantId } = req.params;
@@ -27,15 +24,11 @@ export const getAvailableSlots = async (req, res, next) => {
 
         if (!date || !guests) return res.status(400).json({ success: false, message: "Date and guests required." });
 
-        // FIX: Ensure strict UTC Midnight matching to align with Table storage
-        // Input 'date' is expected to be "YYYY-MM-DD"
         const searchDate = new Date(date);
-        // Explicitly set to UTC midnight to avoid local timezone shifts
         searchDate.setUTCHours(0, 0, 0, 0);
         
         const guestCount = parseInt(guests, 10);
 
-        // 1. Find Tables specifically created for this Date
         const availableTables = await Table.find({
             restaurantId,
             date: searchDate,
@@ -49,7 +42,6 @@ export const getAvailableSlots = async (req, res, next) => {
 
         const tableIds = availableTables.map(t => t._id);
         
-        // 2. Check Bookings & Locks
         const existingBookings = await Booking.find({
             tableId: { $in: tableIds },
             status: { $in: ['confirmed', 'pending'] }
@@ -59,7 +51,6 @@ export const getAvailableSlots = async (req, res, next) => {
             tableId: { $in: tableIds } 
         }).lean();
 
-        // 3. Build Availability Map
         const availability = availableTables.map(table => {
             const bookedSlots = new Set();
             
@@ -112,11 +103,11 @@ export const createBookingCheckoutSession = async (req, res, next) => {
 
             const table = await Table.findById(tableId).populate({
                 path: 'restaurantId',
-                select: 'restaurantName stripeSecretKey'
+                select: 'restaurantName stripeAccountId acceptsOnlineOrders'
             }).session(dbSession);
 
             if (!table) throw { statusCode: 404, message: "Table not found." };
-            if (!table.restaurantId.stripeSecretKey) {
+            if (!table.restaurantId.acceptsOnlineOrders || !table.restaurantId.stripeAccountId) {
                 throw { statusCode: 503, message: "This restaurant is not currently accepting online bookings." };
             }
 
@@ -127,9 +118,8 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 throw { statusCode: 400, message: "Please select sequential time slots." };
             }
 
-            // FIX: Robust Date Construction for Locks
             const bookingDateObj = new Date(date);
-            bookingDateObj.setUTCHours(0, 0, 0, 0); // Align base to UTC Midnight
+            bookingDateObj.setUTCHours(0, 0, 0, 0); 
 
             const locksToCheck = slots.map(slot => {
                 const [h, m] = slot.split(':');
@@ -152,9 +142,13 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 bookingTime: time
             })), { session: dbSession });
 
-            const stripe = new Stripe(table.restaurantId.stripeSecretKey);
+            const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
             const price = table.bookingPrice > 0 ? table.bookingPrice : 1; 
-            const origin = req.headers.origin; 
+
+            // --- FIX: Robust URL Construction ---
+            const clientBaseUrl = config.clientUrls.customer; // Uses config value, robust against proxies
+            const successUrl = `${clientBaseUrl}/booking/success?session_id={CHECKOUT_SESSION_ID}`;
+            const failureUrl = `${clientBaseUrl}/booking/failure?session_id={CHECKOUT_SESSION_ID}`;
 
             const sessionConfig = {
                 payment_method_types: ["card"],
@@ -170,8 +164,8 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                     quantity: 1, 
                 }],
                 mode: "payment",
-                success_url: `${origin}/booking/success?session_id={CHECKOUT_SESSION_ID}`,
-                cancel_url: `${origin}/booking/failure?session_id={CHECKOUT_SESSION_ID}`,
+                success_url: successUrl,
+                cancel_url: failureUrl,
                 customer_email: req.user.email,
                 metadata: {
                     customerId: customerId.toString(),
@@ -181,7 +175,9 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 }
             };
 
-            const stripeSession = await stripe.checkout.sessions.create(sessionConfig);
+            const stripeSession = await stripe.checkout.sessions.create(sessionConfig, {
+                stripeAccount: table.restaurantId.stripeAccountId,
+            });
             
             const primaryTime = locksToCheck[0]; 
 
@@ -233,31 +229,29 @@ export const confirmBooking = async (req, res, next) => {
             
             if (!booking) throw { statusCode: 404, message: "Booking not found." };
             
-            // Idempotency check
             if (booking.status === 'confirmed' && booking.paymentDetails.paymentStatus === 'paid') {
                 confirmedBooking = booking;
                 return;
             }
 
-            const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeSecretKey').session(dbSession);
-            if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant configuration missing.");
+            const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeAccountId').session(dbSession);
+            if (!restaurant || !restaurant.stripeAccountId) throw new Error("Restaurant payment configuration missing.");
 
-            const stripe = new Stripe(restaurant.stripeSecretKey);
-            const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
+            const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+            const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId, {
+                stripeAccount: restaurant.stripeAccountId
+            });
 
             if (checkoutSession.payment_status !== 'paid') {
                 throw { statusCode: 402, message: "Payment not completed." };
             }
             
-            // UPDATE STATUSES
             booking.status = 'confirmed';
             booking.paymentDetails.paymentStatus = 'paid';
             confirmedBooking = await booking.save({ session: dbSession });
 
-            // CLEANUP LOCKS
             if (booking.bookedSlots && booking.bookedSlots.length > 0) {
                  const dateBase = new Date(booking.bookingDate);
-                 // bookingDate acts as primary anchor, ensure we align date parts
                  const year = dateBase.getUTCFullYear();
                  const month = dateBase.getUTCMonth();
                  const day = dateBase.getUTCDate();
@@ -302,13 +296,11 @@ export const handleBookingFailure = async (req, res, next) => {
             
             if (!booking) return; 
 
-            // Only act if pending
             if (booking.status === 'pending') {
                 booking.status = 'cancelled_by_user';
                 booking.paymentDetails.paymentStatus = 'failed';
                 await booking.save({ session: dbSession });
 
-                // RELEASE LOCKS
                 if (booking.bookedSlots && booking.bookedSlots.length > 0) {
                      const dateBase = new Date(booking.bookingDate);
                      const year = dateBase.getUTCFullYear();
@@ -395,14 +387,21 @@ export const getRestaurantBookings = async (req, res, next) => {
 };
 
 const cancelAndRefundBooking = async (booking, dbSession, statusToSet) => {
-    const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeSecretKey').session(dbSession);
-    if (!restaurant || !restaurant.stripeSecretKey) throw new Error("Restaurant payment configuration not found.");
+    const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeAccountId').session(dbSession);
+    if (!restaurant || !restaurant.stripeAccountId) throw new Error("Restaurant payment configuration not found.");
     
     if (booking.paymentDetails.paymentStatus === 'paid') {
-        const stripe = new Stripe(restaurant.stripeSecretKey);
-        const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId);
+        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+        const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId, {
+            stripeAccount: restaurant.stripeAccountId
+        });
+
         if (checkoutSession.payment_intent) {
-            await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
+            await stripe.refunds.create({ 
+                payment_intent: checkoutSession.payment_intent 
+            }, {
+                stripeAccount: restaurant.stripeAccountId
+            });
             booking.paymentDetails.paymentStatus = 'refunded';
         }
     }

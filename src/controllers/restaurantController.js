@@ -13,11 +13,7 @@ import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
  * @access Public
  */
 export const getRestaurants = async (req, res, next) => {
-    // ... [KEEP EXISTING LOGIC: Unchanged from original file] ...
-    // Note: The $project stage in the original file already excluded stripeSecretKey.
-    // It should now also exclude stripeAccountId by default (which it does via Schema select: false).
     try {
-        // [Existing implementation logic...]
         const { type, search, dishSearch, acceptsDining, lat, lng } = req.query;
         const { page, limit, skip } = getPaginationParams(req.query); 
 
@@ -130,6 +126,7 @@ export const getRestaurantById = async (req, res, next) => {
         next(error);
     }
 };
+
 export const updateRestaurantProfile = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;
@@ -164,10 +161,11 @@ export const updateRestaurantProfile = async (req, res, next) => {
         next(error);
     }
 };
+
 export const updateRestaurantSettings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
-        // REMOVED stripeSecretKey from destructuring
+        
         const { handlingChargesPercentage, deliverySettings, acceptsCashOnDelivery, acceptsDining } = req.body;
 
         const updateData = {};
@@ -214,6 +212,7 @@ export const updateRestaurantSettings = async (req, res, next) => {
         next(error);
     }
 };
+
 export const toggleRestaurantStatus = async (req, res, next) => {
     try {
         const  restaurantId  = req.restaurant?._id;

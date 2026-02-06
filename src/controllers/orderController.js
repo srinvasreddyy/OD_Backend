@@ -7,7 +7,10 @@ import { getPaginationParams } from "../utils/paginationUtils.js";
 import { calculateOrderPricing, validateCart, processOrderItems, calculateDeliveryFee } from "../utils/orderCalculation.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
+import config from "../config/env.js";
 
+// Initialize Stripe with Platform Key
+const stripe = new Stripe(config.stripe.secretKey);
 
 /**
  * @description Places a new order for Cash on Delivery.
@@ -138,7 +141,9 @@ export const respondToOrder = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Invalid acceptance value." });
         }
 
-        const order = await Order.findById(orderId).populate({ path: 'restaurantId', select: '+stripeSecretKey' });
+        // UPDATED: Select stripeAccountId instead of secretKey
+        const order = await Order.findById(orderId).populate({ path: 'restaurantId', select: '+stripeAccountId' });
+        
         if (!order) return res.status(404).json({ success: false, message: "Order not found." });
         if (order.restaurantId._id.toString() !== restaurantId.toString()) {
             return res.status(403).json({ success: false, message: "You are not authorized to modify this order." });
@@ -147,21 +152,31 @@ export const respondToOrder = async (req, res, next) => {
             return res.status(400).json({ success: false, message: `This order has already been ${order.acceptanceStatus}.` });
         }
         
-        // Handle Refund if rejected and already paid
+        // Handle Refund if rejected and already paid (Online Orders)
         if (acceptance === 'rejected' && order.paymentType === 'card' && order.paymentStatus === 'paid') {
-            if (!order.restaurantId.stripeSecretKey) {
-                return res.status(500).json({ success: false, message: "Cannot process refund: Restaurant payment key is not configured." });
+            
+            // Verify restaurant has a connected account (though logic uses Platform key, we need an ID to verify legitimacy)
+            if (!order.restaurantId.stripeAccountId) {
+                return res.status(500).json({ success: false, message: "Cannot process refund: Restaurant payment account issue." });
             }
+
             try {
-                const stripe = new Stripe(order.restaurantId.stripeSecretKey);
+                // retrieve session using PLATFORM key
                 const checkoutSession = await stripe.checkout.sessions.retrieve(order.sessionId);
+                
                 if (checkoutSession.payment_intent) {
-                    await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
+                    // Create refund with reverse_transfer: true
+                    // This refunds the customer AND pulls the funds back from the connected account
+                    await stripe.refunds.create({ 
+                        payment_intent: checkoutSession.payment_intent,
+                        reverse_transfer: true 
+                    });
+                    
                     order.paymentStatus = 'refunded';
                 }
             } catch (refundError) {
                 logger.error("Stripe refund failed", { orderId, error: refundError.message });
-                return res.status(500).json({ success: false, message: "Refund could not be processed." });
+                return res.status(500).json({ success: false, message: "Refund could not be processed via Stripe." });
             }
         }
 
@@ -186,19 +201,24 @@ export const cancelOrder = async (req, res, next) => {
             const { orderId } = req.params;
             const userId = req.user?._id;
 
-            const order = await Order.findById(orderId).populate({ path: 'restaurantId', select: '+stripeSecretKey' }).session(session);
+            // UPDATED: Select stripeAccountId
+            const order = await Order.findById(orderId).populate({ path: 'restaurantId', select: '+stripeAccountId' }).session(session);
 
             if (!order) { const e = new Error("Order not found."); e.statusCode = 404; throw e; }
             if (order.customerId.toString() !== userId.toString()) { const e = new Error("You are not authorized to cancel this order."); e.statusCode = 403; throw e; }
             if (order.acceptanceStatus !== 'pending') { const e = new Error(`This order cannot be cancelled as it has already been ${order.acceptanceStatus}.`); e.statusCode = 400; throw e; }
 
             if (order.paymentType === 'card' && order.paymentStatus === 'paid') {
-                if (!order.restaurantId.stripeSecretKey) { throw new Error("Cannot process refund: Restaurant payment key not configured."); }
+                if (!order.restaurantId.stripeAccountId) { throw new Error("Cannot process refund: Restaurant payment setup issue."); }
+                
                 try {
-                    const stripe = new Stripe(order.restaurantId.stripeSecretKey);
                     const checkoutSession = await stripe.checkout.sessions.retrieve(order.sessionId);
                     if (checkoutSession.payment_intent) {
-                        await stripe.refunds.create({ payment_intent: checkoutSession.payment_intent });
+                        // Reverse transfer ensures platform doesn't pay for the refund
+                        await stripe.refunds.create({ 
+                            payment_intent: checkoutSession.payment_intent,
+                            reverse_transfer: true 
+                        });
                         order.paymentStatus = 'refunded';
                     }
                 } catch (refundError) {
