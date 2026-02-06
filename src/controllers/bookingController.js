@@ -28,7 +28,9 @@ export const getAvailableSlots = async (req, res, next) => {
         searchDate.setUTCHours(0, 0, 0, 0);
         
         const guestCount = parseInt(guests, 10);
+        const now = new Date();
 
+        // 1. Fetch Inventory (Tables)
         const availableTables = await Table.find({
             restaurantId,
             date: searchDate,
@@ -42,11 +44,13 @@ export const getAvailableSlots = async (req, res, next) => {
 
         const tableIds = availableTables.map(t => t._id);
         
+        // 2. Fetch Confirmed & Pending Bookings
         const existingBookings = await Booking.find({
             tableId: { $in: tableIds },
             status: { $in: ['confirmed', 'pending'] }
         }).select('tableId bookedSlots bookingDate').lean();
         
+        // 3. Fetch Temporary Locks
         const activeLocks = await SlotLock.find({ 
             tableId: { $in: tableIds } 
         }).lean();
@@ -64,11 +68,23 @@ export const getAvailableSlots = async (req, res, next) => {
             });
 
             activeLocks.filter(l => l.tableId.toString() === table._id.toString()).forEach(l => {
-                 const h = new Date(l.bookingTime).getUTCHours(); 
-                 bookedSlots.add(`${String(h).padStart(2,'0')}:00`);
+                 const d = new Date(l.bookingTime);
+                 const h = d.getUTCHours(); 
+                 const m = d.getUTCMinutes();
+                 bookedSlots.add(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
             });
 
-            const openSlots = table.availableHours.filter(slot => !bookedSlots.has(slot));
+            const openSlots = table.availableHours.filter(slot => {
+                if (bookedSlots.has(slot)) return false;
+
+                const [h, m] = slot.split(':').map(Number);
+                const slotDateTime = new Date(table.date); 
+                slotDateTime.setUTCHours(h, m, 0, 0);
+                
+                if (slotDateTime < now) return false;
+
+                return true;
+            });
 
             return {
                 tableId: table._id,
@@ -143,10 +159,10 @@ export const createBookingCheckoutSession = async (req, res, next) => {
             })), { session: dbSession });
 
             const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-            const price = table.bookingPrice > 0 ? table.bookingPrice : 1; 
+            // Price per hour/slot
+            const pricePerSlot = table.bookingPrice > 0 ? table.bookingPrice : 1; 
 
-            // --- FIX: Robust URL Construction ---
-            const clientBaseUrl = config.clientUrls.customer; // Uses config value, robust against proxies
+            const clientBaseUrl = config.clientUrls.customer;
             const successUrl = `${clientBaseUrl}/booking/success?session_id={CHECKOUT_SESSION_ID}`;
             const failureUrl = `${clientBaseUrl}/booking/failure?session_id={CHECKOUT_SESSION_ID}`;
 
@@ -159,11 +175,17 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                             name: `Booking Table ${table.tableNumber} - ${table.restaurantId.restaurantName}`,
                             description: `Date: ${date} | Slots: ${slots.join(', ')} | Guests: ${guests}`,
                         },
-                        unit_amount: Math.round(price * 100), 
+                        unit_amount: Math.round(pricePerSlot * 100), 
                     },
-                    quantity: 1, 
+                    // FIX: Quantity represents hours booked.
+                    quantity: slots.length, 
                 }],
                 mode: "payment",
+                payment_intent_data: {
+                    transfer_data: {
+                        destination: table.restaurantId.stripeAccountId,
+                    },
+                },
                 success_url: successUrl,
                 cancel_url: failureUrl,
                 customer_email: req.user.email,
@@ -175,25 +197,24 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                 }
             };
 
-            const stripeSession = await stripe.checkout.sessions.create(sessionConfig, {
-                stripeAccount: table.restaurantId.stripeAccountId,
-            });
+            const stripeSession = await stripe.checkout.sessions.create(sessionConfig);
             
-            const primaryTime = locksToCheck[0]; 
+            // Calculate Total Fee to store in DB
+            const totalFee = pricePerSlot * slots.length;
 
             const pendingBooking = new Booking({
                 bookingNumber: generateUniqueOrderNumber(),
                 restaurantId: table.restaurantId._id,
                 customerId,
                 tableId,
-                bookingDate: primaryTime,
+                bookingDate: bookingDateObj,
                 bookedSlots: slots,
                 guests,
                 status: 'pending', 
                 paymentDetails: {
                     sessionId: stripeSession.id,
                     paymentStatus: 'pending', 
-                    bookingFee: price
+                    bookingFee: totalFee 
                 }
             });
             await pendingBooking.save({ session: dbSession });
@@ -238,9 +259,7 @@ export const confirmBooking = async (req, res, next) => {
             if (!restaurant || !restaurant.stripeAccountId) throw new Error("Restaurant payment configuration missing.");
 
             const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-            const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId, {
-                stripeAccount: restaurant.stripeAccountId
-            });
+            const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
 
             if (checkoutSession.payment_status !== 'paid') {
                 throw { statusCode: 402, message: "Payment not completed." };
@@ -335,13 +354,16 @@ export const getCustomerBookings = async (req, res, next) => {
         const customerId = req.user._id;
         const { status } = req.query;
         const query = { customerId };
-        const now = new Date();
-
+        
         if (status === 'upcoming') {
-            query.bookingDate = { $gte: now };
+            const startOfToday = new Date();
+            startOfToday.setUTCHours(0,0,0,0);
+            query.bookingDate = { $gte: startOfToday };
             query.status = 'confirmed';
         } else if (status === 'past') {
-            query.bookingDate = { $lt: now };
+            const startOfToday = new Date();
+            startOfToday.setUTCHours(0,0,0,0);
+            query.bookingDate = { $lt: startOfToday };
         } else if (status) {
             query.status = status;
         }
@@ -392,15 +414,12 @@ const cancelAndRefundBooking = async (booking, dbSession, statusToSet) => {
     
     if (booking.paymentDetails.paymentStatus === 'paid') {
         const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-        const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId, {
-            stripeAccount: restaurant.stripeAccountId
-        });
+        const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId);
 
         if (checkoutSession.payment_intent) {
             await stripe.refunds.create({ 
-                payment_intent: checkoutSession.payment_intent 
-            }, {
-                stripeAccount: restaurant.stripeAccountId
+                payment_intent: checkoutSession.payment_intent,
+                reverse_transfer: true 
             });
             booking.paymentDetails.paymentStatus = 'refunded';
         }
@@ -424,6 +443,10 @@ export const cancelBookingByUser = async (req, res, next) => {
 
             const now = new Date();
             const bookingTime = new Date(booking.bookingDate);
+            const firstSlot = booking.bookedSlots[0] || "00:00";
+            const [h, m] = firstSlot.split(':').map(Number);
+            bookingTime.setUTCHours(h, m, 0, 0);
+
             const hoursDifference = (bookingTime - now) / (1000 * 60 * 60);
 
             if (hoursDifference < 5) throw { statusCode: 403, message: "Booking cannot be cancelled within 5 hours of the scheduled time." };

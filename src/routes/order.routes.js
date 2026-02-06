@@ -8,11 +8,12 @@ import {
     getNewRestaurantOrders,
     respondToOrder,
     updateOrderStatus,
-    assignDeliveryPartner, // <-- Confirmed import
+    assignDeliveryPartner, 
     getRestaurantStats,
     getRestaurantSalesReport,
     getRestaurantOrdersReport,
-    getMenuItemPerformance
+    getMenuItemPerformance,
+    downloadInvoice
 } from '../controllers/orderController.js';
 import { validateUser } from '../middleware/validateUser.js';
 import { validateRestaurant } from '../middleware/validateRestaurant.js';
@@ -29,13 +30,13 @@ router.get('/restaurant', validateRestaurant, getRestaurantOrders);
 router.get('/restaurant/:orderId', validateRestaurant, getOrderDetails); 
 router.patch('/:orderId/respond', validateRestaurant, respondToOrder);
 router.patch('/:orderId/status', validateRestaurant, updateOrderStatus);
-// CONFIRMED ROUTE for assignment
 router.patch('/:orderId/assign-delivery', validateRestaurant, assignDeliveryPartner);
 
 
 // --- Customer-Facing Routes (Protected by validateUser) ---
 router.post('/place-cash-order', validateUser, placeCashOrder); 
 router.get('/my-orders', validateUser, getUserOrders);
+router.get('/:orderId/invoice', validateUser, downloadInvoice);
 router.get('/:orderId', validateUser, getOrderDetails); 
 router.patch('/:orderId/cancel', validateUser, cancelOrder);
 

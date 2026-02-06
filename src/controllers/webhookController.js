@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import Restaurant from "../models/Restaurant.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
+import { sendOrderInvoiceEmail } from "../utils/MailUtils.js";
 
 // --- Helper Functions ---
 
@@ -19,15 +20,15 @@ const handleCheckoutSessionCompleted = async (session) => {
     }
 
     if (!orderId) {
-        // NOTE: This might be a Booking session (from bookingController) not an Order session
-        // Booking Controller logic usually handles success via client-side or specific webhook logic if expanded
         logger.info(`Webhook: No orderId in metadata for session ${sessionId}. Might be a Booking or other type.`);
         return;
     }
 
     try {
         // 1. Find the order created previously
-        const order = await Order.findById(orderId);
+        const order = await Order.findById(orderId)
+            .populate('restaurantId')
+            .populate('customerId');
         
         if (!order) {
             logger.error(`Webhook: Order not found for ID ${orderId}`);
@@ -47,13 +48,15 @@ const handleCheckoutSessionCompleted = async (session) => {
         await order.save();
 
         // 4. Clear User Cart
-        // Now that payment is confirmed, we can safely remove items from the cart
         if (userId && cartType) {
             await User.findByIdAndUpdate(userId, { $set: { [cartType]: [] } });
             logger.info(`Webhook: Cart ${cartType} cleared for user ${userId}`);
         }
 
-        logger.info(`Webhook: Order ${order.orderNumber} successfully finalized.`);
+        // 5. Send Invoice Email
+        await sendOrderInvoiceEmail(order);
+
+        logger.info(`Webhook: Order ${order.orderNumber} successfully finalized and invoice sent.`);
 
     } catch (error) {
         logger.error('Error processing checkout session webhook', { error: error.message, sessionId });
@@ -126,10 +129,6 @@ const handleConnectWebhook = async (req, res) => {
              return res.status(500).json({ received: false, error: "Processing failed" });
         }
     }
-
-    // NOTE: If you are using Direct Charges (like in Bookings), 'checkout.session.completed' 
-    // might arrive here depending on your Webhook configuration in Stripe Dashboard.
-    // If so, you would handle booking confirmation here similar to order confirmation.
 
     res.status(200).json({ received: true });
 };

@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import logger from './logger.js';
 import config from '../config/env.js';
+import { generateInvoicePDF } from './InvoiceGenerator.js';
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -152,4 +153,64 @@ export const sendRejectionEmail = async (email, restaurantName, reason) => {
   } catch (error) {
     logger.error('Failed to send rejection email', { email, error: error.message });
   }
+};
+
+export const sendOrderInvoiceEmail = async (order) => {
+    try {
+        const pdfBuffer = await generateInvoicePDF(order);
+        const email = order.customerDetails?.email || order.customerId?.email;
+        
+        if (!email) {
+            // If email isn't in customerDetails, assume caller populated customerId or we need to rely on what is available
+             // In Order model, customerId is a ref to User which has email. 
+             // Ideally order.customerId.email is available if populated.
+             if (!order.customerId || !order.customerId.email) {
+                 logger.warn(`No email found for order ${order.orderNumber}, skipping invoice email.`);
+                 return;
+             }
+        }
+        
+        const targetEmail = email || order.customerId.email;
+
+        const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 20px; color: #333; }
+                .header { background-color: #f8f9fa; padding: 20px; border-radius: 8px; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h2>Order Receipt #${order.orderNumber}</h2>
+                <p>Hi ${order.customerDetails.name},</p>
+                <p>Thank you for your order! Your payment has been successfully processed.</p>
+                <p>Please find your official invoice attached to this email.</p>
+                <br/>
+                <p><strong>Total Paid:</strong> GBP ${order.pricing.totalAmount.toFixed(2)}</p>
+            </div>
+        </body>
+        </html>
+        `;
+
+        await transporter.sendMail({
+            from: config.email.user,
+            to: targetEmail,
+            subject: `Invoice for Order #${order.orderNumber}`,
+            html: htmlContent,
+            attachments: [
+                {
+                    filename: `Invoice_${order.orderNumber}.pdf`,
+                    content: pdfBuffer,
+                    contentType: 'application/pdf'
+                }
+            ]
+        });
+
+        logger.info(`Invoice email sent to ${targetEmail} for Order ${order.orderNumber}`);
+
+    } catch (error) {
+        logger.error("Failed to send invoice email", { orderId: order._id, error: error.message });
+    }
 };

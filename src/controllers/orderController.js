@@ -8,6 +8,8 @@ import { calculateOrderPricing, validateCart, processOrderItems, calculateDelive
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
+import { sendOrderInvoiceEmail } from "../utils/MailUtils.js";
+import { generateInvoicePDF } from "../utils/InvoiceGenerator.js";
 
 // Initialize Stripe with Platform Key
 const stripe = new Stripe(config.stripe.secretKey);
@@ -419,7 +421,10 @@ export const updateOrderStatus = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "No status provided for update." });
         }
         
-        const order = await Order.findOne({ _id: orderId, restaurantId: restaurantId });
+        const order = await Order.findOne({ _id: orderId, restaurantId: restaurantId })
+            .populate('restaurantId')
+            .populate('customerId');
+
         if (!order) {
             return res.status(404).json({ success: false, message: "Order not found or unauthorized." });
         }
@@ -438,12 +443,24 @@ export const updateOrderStatus = async (req, res, next) => {
              return res.status(400).json({ success: false, message: "Order must be accepted before status updates."});
         }
         
-        // Loose check or strict check depending on preference, currently allowing jumps if reasonable
         if (!Object.values(allowedTransitions).flat().includes(status)) {
              return res.status(400).json({ success: false, message: "Invalid status provided." });
         }
 
-        order.status = status;
+        // Logic for Invoice Generation on Cash Orders upon Delivery
+        if (status === 'delivered') {
+            order.status = 'delivered';
+            
+            // For Cash orders, payment is confirmed upon delivery
+            if (order.paymentType === 'cash') {
+                order.paymentStatus = 'paid';
+                // Trigger Email with Invoice
+                await sendOrderInvoiceEmail(order);
+            } 
+        } else {
+            order.status = status;
+        }
+
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: "Order updated successfully.", data: updatedOrder });
 
@@ -606,6 +623,44 @@ export const getMenuItemPerformance = async (req, res, next) => {
 
     } catch (error) {
         logger.error("Error generating menu item performance report", { error: error.message });
+        next(error);
+    }
+};
+
+export const downloadInvoice = async (req, res, next) => {
+    try {
+        const { orderId } = req.params;
+        const userId = req.user?._id;
+
+        const order = await Order.findById(orderId)
+            .populate('restaurantId')
+            .populate('customerId');
+
+        if (!order) {
+            return res.status(404).json({ success: false, message: "Order not found." });
+        }
+
+        // Security check
+        if (order.customerId._id.toString() !== userId.toString()) {
+            return res.status(403).json({ success: false, message: "Unauthorized." });
+        }
+
+        if (order.paymentStatus !== 'paid') {
+            return res.status(400).json({ success: false, message: "Invoice not available for unpaid orders." });
+        }
+
+        const pdfBuffer = await generateInvoicePDF(order);
+
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename=Invoice_${order.orderNumber}.pdf`,
+            'Content-Length': pdfBuffer.length
+        });
+
+        res.send(pdfBuffer);
+
+    } catch (error) {
+        logger.error("Error downloading invoice", { error: error.message });
         next(error);
     }
 };
