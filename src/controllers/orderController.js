@@ -11,16 +11,15 @@ import config from "../config/env.js";
 import { sendOrderInvoiceEmail } from "../utils/MailUtils.js";
 import { generateInvoicePDF } from "../utils/InvoiceGenerator.js";
 
-// Initialize Stripe with Platform Key
+// Initialize Stripe
 const stripe = new Stripe(config.stripe.secretKey);
 
 /**
  * @description Places a new order for Cash on Delivery.
  * @route POST /api/orders/place-cash-order
- * @access Private (User)
  */
 export const placeCashOrder = async (req, res, next) => {
-    // 1. Extract orderType and correct address fields
+    // 1. Extract inputs
     const { cartType, deliveryAddress, notes, orderType } = req.body;
     const userId = req.user?._id;
 
@@ -33,15 +32,13 @@ export const placeCashOrder = async (req, res, next) => {
                 throw { statusCode: 400, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." };
             }
             
-            // Validate Order Type (Default to delivery if missing)
             const validOrderType = ['delivery', 'pickup'].includes(orderType) ? orderType : 'delivery';
 
-            // Validate Address (Required for Delivery only)
             if (validOrderType === 'delivery' && (!deliveryAddress || !deliveryAddress.coordinates)) {
                 throw { statusCode: 400, message: "Delivery address with coordinates is required for delivery orders." };
             }
 
-            // 3. Fetch User and Cart
+            // 3. Fetch User & Cart
             const user = await User.findById(userId).populate(`${cartType}.menuItemId`).session(dbSession);
             if (!user) throw { statusCode: 404, message: "User not found." };
             
@@ -49,15 +46,13 @@ export const placeCashOrder = async (req, res, next) => {
             const { error: cartError, restaurantId } = validateCart(cart);
             if (cartError) throw { statusCode: 400, message: cartError };
 
-            // 4. Fetch Restaurant and Check COD Availability
+            // 4. Fetch Restaurant
             const restaurant = await Restaurant.findById(restaurantId).session(dbSession).lean();
             if (!restaurant) throw { statusCode: 404, message: `Restaurant with ID ${restaurantId} not found.` };
             
-            // Strict check: if explicitly false, block it.
             if (restaurant.acceptsCashOnDelivery === false) {
                 throw { statusCode: 400, message: "This restaurant does not accept Cash on Delivery." };
             }
-            
             if (!restaurant.isActive) {
                  throw { statusCode: 400, message: "This restaurant is currently not accepting orders." };
             }
@@ -65,9 +60,8 @@ export const placeCashOrder = async (req, res, next) => {
             // 5. Process items
             const processedItems = await processOrderItems(cart);
             
-            // 6. Calculate Delivery Fee (Skip for Pickup)
+            // 6. Calculate Delivery Fee
             let deliveryFee = 0;
-
             if (validOrderType === 'delivery') {
                 if (!deliveryAddress.coordinates || !deliveryAddress.coordinates.coordinates) {
                     throw { statusCode: 400, message: "Valid coordinates are required for delivery." };
@@ -84,36 +78,41 @@ export const placeCashOrder = async (req, res, next) => {
                 deliveryFee = calculatedFee;
             }
 
-            // Calculate Final Pricing
+            // Calculate Pricing
             const { pricing } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
 
-            // 7. Format Address for Schema
+            // 7. Format Address
             const formattedAddress = {
                 fullAddress: deliveryAddress?.addressLine1 || deliveryAddress?.fullAddress || "Self Pickup",
                 landmark: deliveryAddress?.landmark || "",
                 coordinates: deliveryAddress?.coordinates || { type: 'Point', coordinates: [0, 0] }
             };
 
-            // 8. Create and Save the Order
+            // 8. Create Order
+            // Note: We explicitly store email in customerDetails for invoice generation later
             const orderData = new Order({
                 orderNumber: generateUniqueOrderNumber(),
                 restaurantId,
                 customerId: userId,
-                customerDetails: { name: user.fullName, phoneNumber: user.phoneNumber },
+                customerDetails: { 
+                    name: user.fullName, 
+                    phoneNumber: user.phoneNumber,
+                    email: user.email // Store email for invoice
+                },
                 orderType: validOrderType,
                 deliveryAddress: formattedAddress,
                 orderedItems: processedItems,
                 pricing,
                 paymentType: 'cash',
-                paymentStatus: 'pending',
-                acceptanceStatus: 'pending', // Visible to restaurant immediately
-                status: 'placed', // Explicitly 'placed' for COD
+                paymentStatus: 'pending', // Invoice Pending
+                acceptanceStatus: 'pending', 
+                status: 'placed', 
                 notes: notes || '',
             });
 
             const savedOrder = await orderData.save({ session: dbSession });
             
-            // 9. Clear the user's cart
+            // 9. Clear cart
             user[cartType] = [];
             await user.save({ session: dbSession });
 
@@ -127,7 +126,7 @@ export const placeCashOrder = async (req, res, next) => {
              await dbSession.abortTransaction();
         }
         logger.error("Error placing cash order", { error: error.message, statusCode: error.statusCode, userId });
-        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred while placing the order." });
+        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred." });
     } finally {
         await dbSession.endSession();
     }
@@ -143,37 +142,29 @@ export const respondToOrder = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Invalid acceptance value." });
         }
 
-        // UPDATED: Select stripeAccountId instead of secretKey
         const order = await Order.findById(orderId).populate({ path: 'restaurantId', select: '+stripeAccountId' });
         
         if (!order) return res.status(404).json({ success: false, message: "Order not found." });
         if (order.restaurantId._id.toString() !== restaurantId.toString()) {
-            return res.status(403).json({ success: false, message: "You are not authorized to modify this order." });
+            return res.status(403).json({ success: false, message: "Unauthorized." });
         }
         if (order.acceptanceStatus !== 'pending') {
-            return res.status(400).json({ success: false, message: `This order has already been ${order.acceptanceStatus}.` });
+            return res.status(400).json({ success: false, message: `Order already ${order.acceptanceStatus}.` });
         }
         
-        // Handle Refund if rejected and already paid (Online Orders)
+        // Handle Refund if rejected and already paid
         if (acceptance === 'rejected' && order.paymentType === 'card' && order.paymentStatus === 'paid') {
-            
-            // Verify restaurant has a connected account (though logic uses Platform key, we need an ID to verify legitimacy)
             if (!order.restaurantId.stripeAccountId) {
                 return res.status(500).json({ success: false, message: "Cannot process refund: Restaurant payment account issue." });
             }
 
             try {
-                // retrieve session using PLATFORM key
                 const checkoutSession = await stripe.checkout.sessions.retrieve(order.sessionId);
-                
                 if (checkoutSession.payment_intent) {
-                    // Create refund with reverse_transfer: true
-                    // This refunds the customer AND pulls the funds back from the connected account
                     await stripe.refunds.create({ 
                         payment_intent: checkoutSession.payment_intent,
                         reverse_transfer: true 
                     });
-                    
                     order.paymentStatus = 'refunded';
                 }
             } catch (refundError) {
@@ -184,7 +175,7 @@ export const respondToOrder = async (req, res, next) => {
 
         order.acceptanceStatus = acceptance;
         if (acceptance === 'rejected') order.status = 'cancelled';
-        if (acceptance === 'accepted') order.status = 'preparing'; // Auto-move to preparing
+        if (acceptance === 'accepted') order.status = 'preparing'; 
 
         const updatedOrder = await order.save();
         return res.status(200).json({ success: true, message: `Order successfully ${acceptance}.`, data: updatedOrder });
@@ -203,20 +194,18 @@ export const cancelOrder = async (req, res, next) => {
             const { orderId } = req.params;
             const userId = req.user?._id;
 
-            // UPDATED: Select stripeAccountId
             const order = await Order.findById(orderId).populate({ path: 'restaurantId', select: '+stripeAccountId' }).session(session);
 
             if (!order) { const e = new Error("Order not found."); e.statusCode = 404; throw e; }
-            if (order.customerId.toString() !== userId.toString()) { const e = new Error("You are not authorized to cancel this order."); e.statusCode = 403; throw e; }
-            if (order.acceptanceStatus !== 'pending') { const e = new Error(`This order cannot be cancelled as it has already been ${order.acceptanceStatus}.`); e.statusCode = 400; throw e; }
+            if (order.customerId.toString() !== userId.toString()) { const e = new Error("Unauthorized."); e.statusCode = 403; throw e; }
+            if (order.acceptanceStatus !== 'pending') { const e = new Error(`Cannot cancel processed order.`); e.statusCode = 400; throw e; }
 
             if (order.paymentType === 'card' && order.paymentStatus === 'paid') {
-                if (!order.restaurantId.stripeAccountId) { throw new Error("Cannot process refund: Restaurant payment setup issue."); }
+                if (!order.restaurantId.stripeAccountId) throw new Error("Restaurant payment issue.");
                 
                 try {
                     const checkoutSession = await stripe.checkout.sessions.retrieve(order.sessionId);
                     if (checkoutSession.payment_intent) {
-                        // Reverse transfer ensures platform doesn't pay for the refund
                         await stripe.refunds.create({ 
                             payment_intent: checkoutSession.payment_intent,
                             reverse_transfer: true 
@@ -224,8 +213,7 @@ export const cancelOrder = async (req, res, next) => {
                         order.paymentStatus = 'refunded';
                     }
                 } catch (refundError) {
-                    logger.error("Stripe refund failed on order cancellation", { orderId, error: refundError.message });
-                    throw new Error("Order cancellation failed because the refund could not be processed.");
+                    throw new Error("Order cancellation failed: Refund error.");
                 }
             }
 
@@ -233,13 +221,11 @@ export const cancelOrder = async (req, res, next) => {
             cancelledOrder = await order.save({ session });
         });
 
-        return res.status(200).json({ success: true, message: "Order has been cancelled successfully.", data: cancelledOrder });
+        return res.status(200).json({ success: true, message: "Order cancelled successfully.", data: cancelledOrder });
     } catch (error) {
-        if (session.inTransaction()) {
-             await session.abortTransaction();
-        }
-        logger.error("Error cancelling order", { error: error.message, statusCode: error.statusCode });
-        res.status(error.statusCode || 500).json({ success: false, message: error.message || "An unexpected error occurred." });
+        if (session.inTransaction()) await session.abortTransaction();
+        logger.error("Error cancelling order", { error: error.message });
+        res.status(error.statusCode || 500).json({ success: false, message: error.message || "Error cancelling order." });
     } finally {
         session.endSession();
     }
@@ -250,7 +236,6 @@ export const getUserOrders = async (req, res, next) => {
         const userId = req.user?._id;
         const { page, limit, skip } = getPaginationParams(req.query);
         
-        // FILTER: Exclude abandoned carts (awaiting_payment)
         const filter = { 
             customerId: userId,
             status: { $ne: 'awaiting_payment' } 
@@ -265,7 +250,6 @@ export const getUserOrders = async (req, res, next) => {
         const totalOrders = await Order.countDocuments(filter);
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
-        logger.error("Error fetching user orders", { error: error.message });
         next(error);
     }
 };
@@ -279,14 +263,12 @@ export const getRestaurantOrders = async (req, res, next) => {
         const query = { restaurantId };
         
         if (status) {
-            // Support comma-separated statuses for multi-tab filtering
             if (status.includes(',')) {
                 query.status = { $in: status.split(',') };
             } else {
                 query.status = status;
             }
         } else {
-            // FILTER: Default exclusion of abandoned carts
             query.status = { $ne: 'awaiting_payment' };
         }
 
@@ -297,7 +279,6 @@ export const getRestaurantOrders = async (req, res, next) => {
 
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
-        logger.error("Error fetching restaurant orders", { error: error.message });
         next(error);
     }
 };
@@ -306,14 +287,12 @@ export const getNewRestaurantOrders = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
         const { page, limit, skip } = getPaginationParams(req.query);
-        // Explicitly asking for 'placed' orders ensures we don't get 'awaiting_payment'
         const query = { restaurantId, status: 'placed', acceptanceStatus: 'pending' };
         
         const orders = await Order.find(query).populate('customerId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(limit);
         const totalOrders = await Order.countDocuments(query);
         return res.status(200).json({ success: true, data: orders, pagination: { total: totalOrders, pages: Math.ceil(totalOrders / limit), currentPage: page } });
     } catch (error) {
-        logger.error("Error fetching new restaurant orders", { error: error.message });
         next(error);
     }
 };
@@ -328,54 +307,44 @@ export const assignDeliveryPartner = async (req, res, next) => {
         const restaurantId = req.restaurant?._id;
         const restaurantPartnerList = req.restaurant?.deliveryPartners || [];
 
-        if (!mongoose.Types.ObjectId.isValid(deliveryPartnerId)) {
-            return res.status(400).json({ success: false, message: "Invalid delivery partner ID format." });
-        }
-
         const order = await Order.findById(orderId).session(session);
         if (!order) return res.status(404).json({ success: false, message: "Order not found." });
         if (order.restaurantId.toString() !== restaurantId.toString()) {
-            return res.status(403).json({ success: false, message: "You are not authorized to modify this order." });
+            return res.status(403).json({ success: false, message: "Unauthorized." });
         }
         if (order.orderType !== 'delivery') {
-            return res.status(400).json({ success: false, message: "Cannot assign a delivery partner to a non-delivery order." });
+            return res.status(400).json({ success: false, message: "Not a delivery order." });
         }
-        
-        // Ensure order is ready for delivery
         if (order.acceptanceStatus !== 'accepted') {
              return res.status(400).json({ success: false, message: "Order must be accepted first." });
         }
 
         const isAssociated = restaurantPartnerList.some(id => id.toString() === deliveryPartnerId);
         if (!isAssociated) {
-            return res.status(403).json({ success: false, message: "This delivery partner is not associated with your restaurant." });
+            return res.status(403).json({ success: false, message: "Partner not associated with restaurant." });
         }
         
         const deliveryPartner = await User.findOne({ _id: deliveryPartnerId, userType: 'delivery_partner' }).session(session);
         if (!deliveryPartner) {
-            return res.status(404).json({ success: false, message: "Delivery partner not found." });
+            return res.status(404).json({ success: false, message: "Partner not found." });
         }
-        
         if (!deliveryPartner.deliveryPartnerProfile?.isAvailable) {
-            return res.status(409).json({ success: false, message: "Delivery partner is currently unavailable." });
+            return res.status(409).json({ success: false, message: "Partner is unavailable." });
         }
 
         order.assignedDeliveryPartnerId = deliveryPartnerId;
         order.status = 'out_for_delivery';
         
-        // Mark partner as busy
         deliveryPartner.deliveryPartnerProfile.isAvailable = false;
 
         await order.save({ session });
         await deliveryPartner.save({ session });
 
         await session.commitTransaction();
-        
-        return res.status(200).json({ success: true, message: "Delivery partner assigned successfully.", data: order });
+        return res.status(200).json({ success: true, message: "Delivery partner assigned.", data: order });
 
     } catch (error) {
         await session.abortTransaction();
-        logger.error("Error assigning delivery partner", { error: error.message });
         next(error);
     } finally {
         session.endSession();
@@ -386,7 +355,7 @@ export const getOrderDetails = async (req, res, next) => {
     try {
         const orderId = req.params?.orderId;
         if (!mongoose.Types.ObjectId.isValid(orderId)) {
-            return res.status(400).json({ success: false, message: "Invalid order ID format." });
+            return res.status(400).json({ success: false, message: "Invalid ID." });
         }
 
         const order = await Order.findById(orderId)
@@ -401,12 +370,11 @@ export const getOrderDetails = async (req, res, next) => {
         const isOwner = req.restaurant && order.restaurantId._id.toString() === req.restaurant._id.toString();
         
         if (!isCustomer && !isOwner) {
-            return res.status(403).json({ success: false, message: "You are not authorized to view this order." });
+            return res.status(403).json({ success: false, message: "Unauthorized." });
         }
         
         return res.status(200).json({ success: true, data: order });
     } catch (error) {
-        logger.error("Error fetching order details", { error: error.message });
         next(error);
     }
 };
@@ -418,51 +386,60 @@ export const updateOrderStatus = async (req, res, next) => {
         const restaurantId = req.restaurant?._id;
 
         if (!status) {
-            return res.status(400).json({ success: false, message: "No status provided for update." });
+            return res.status(400).json({ success: false, message: "No status provided." });
         }
         
+        // Populate customerId to ensure we have email for invoice sending
         const order = await Order.findOne({ _id: orderId, restaurantId: restaurantId })
             .populate('restaurantId')
             .populate('customerId');
 
         if (!order) {
-            return res.status(404).json({ success: false, message: "Order not found or unauthorized." });
+            return res.status(404).json({ success: false, message: "Order not found." });
         }
 
-        // State Machine for Status
         const allowedTransitions = {
             'placed': ['preparing', 'cancelled'],
             'preparing': ['ready_for_pickup', 'out_for_delivery', 'cancelled'],
-            'ready_for_pickup': ['delivered', 'cancelled'], // for pickup orders
-            'out_for_delivery': ['delivered', 'cancelled'], // for delivery orders
+            'ready_for_pickup': ['delivered', 'cancelled'], 
+            'out_for_delivery': ['delivered', 'cancelled'], 
             'delivered': [],
             'cancelled': [],
         };
 
         if (order.acceptanceStatus !== 'accepted' && status !== 'cancelled') {
-             return res.status(400).json({ success: false, message: "Order must be accepted before status updates."});
+             return res.status(400).json({ success: false, message: "Accept order first."});
         }
         
         if (!Object.values(allowedTransitions).flat().includes(status)) {
-             return res.status(400).json({ success: false, message: "Invalid status provided." });
+             return res.status(400).json({ success: false, message: "Invalid status transition." });
         }
 
-        // Logic for Invoice Generation on Cash Orders upon Delivery
+        // --- INVOICE TRIGGER LOGIC ---
         if (status === 'delivered') {
             order.status = 'delivered';
             
-            // For Cash orders, payment is confirmed upon delivery
-            if (order.paymentType === 'cash') {
+            // For Cash orders, payment confirms on delivery
+            if (order.paymentType === 'cash' && order.paymentStatus !== 'paid') {
                 order.paymentStatus = 'paid';
-                // Trigger Email with Invoice
-                await sendOrderInvoiceEmail(order);
-            } 
+                
+                // Save state first
+                const updated = await order.save();
+                
+                // Trigger Invoice Email
+                logger.info(`Sending invoice for COD order ${order.orderNumber}`);
+                await sendOrderInvoiceEmail(updated);
+                
+                return res.status(200).json({ success: true, message: "Order delivered & Invoice Sent.", data: updated });
+            } else {
+                const updated = await order.save();
+                return res.status(200).json({ success: true, message: "Order updated.", data: updated });
+            }
         } else {
             order.status = status;
+            const updatedOrder = await order.save();
+            return res.status(200).json({ success: true, message: "Order updated.", data: updatedOrder });
         }
-
-        const updatedOrder = await order.save();
-        return res.status(200).json({ success: true, message: "Order updated successfully.", data: updatedOrder });
 
     } catch (error) {
         logger.error("Error updating order status", { error: error.message });
@@ -473,7 +450,6 @@ export const updateOrderStatus = async (req, res, next) => {
 export const getRestaurantStats = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant?._id;
-        
         const now = new Date();
         const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
         const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -640,13 +616,14 @@ export const downloadInvoice = async (req, res, next) => {
             return res.status(404).json({ success: false, message: "Order not found." });
         }
 
-        // Security check
+        // Security check: Must be owner or customer
         if (order.customerId._id.toString() !== userId.toString()) {
             return res.status(403).json({ success: false, message: "Unauthorized." });
         }
 
+        // Strict: Invoice only available if PAID
         if (order.paymentStatus !== 'paid') {
-            return res.status(400).json({ success: false, message: "Invoice not available for unpaid orders." });
+            return res.status(400).json({ success: false, message: "Invoice is only available after payment is completed." });
         }
 
         const pdfBuffer = await generateInvoicePDF(order);

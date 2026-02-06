@@ -7,6 +7,7 @@ import { getDistanceFromLatLonInMiles } from "../utils/locationUtils.js";
 import { processOrderItems, calculateOrderPricing } from "../utils/orderCalculation.js"; 
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
+import { sendOrderInvoiceEmail } from "../utils/MailUtils.js"; // Import for backup verification trigger
 
 const stripe = new Stripe(config.stripe.secretKey);
 
@@ -21,6 +22,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         const userId = req.user._id;
         const { cartType, deliveryAddress, orderType } = req.body; 
 
+        // 1. Validate Input
         if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
             return res.status(400).json({ success: false, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
         }
@@ -33,6 +35,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         
         const cartField = cartType;
 
+        // 2. Fetch User & Cart
         const user = await User.findById(userId).populate(`${cartField}.menuItemId`).lean();
         if (!user) {
             return res.status(404).json({ success: false, message: "User not found." });
@@ -43,6 +46,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             return res.status(400).json({ success: false, message: "Cannot checkout with an empty cart." });
         }
         
+        // 3. Validate Restaurant & Payment Capability
         const restaurantId = cart[0].menuItemId.restaurantId;
         
         const restaurant = await Restaurant.findById(restaurantId).select('+stripeAccountId').lean();
@@ -58,6 +62,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             return res.status(500).json({ success: false, message: "This restaurant is not set up to receive payments yet." });
         }
 
+        // 4. Process Items & Calculate Fees
         const processedItems = await processOrderItems(cart);
         
         let deliveryFee = 0;
@@ -91,6 +96,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
              return res.status(500).json({ success: false, message: "Payment calculation error: Application fee invalid." });
         }
 
+        // 5. Create Preliminary Order
         const idempotencyKey = config.featureFlags.enableIdempotencyCheck ? uuidv4() : null;
         
         const newOrder = new Order({
@@ -99,7 +105,8 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             customerId: userId,
             customerDetails: { 
                 name: user.fullName || "Customer", 
-                phoneNumber: user.phoneNumber 
+                phoneNumber: user.phoneNumber,
+                email: user.email // Crucial for Invoice
             },
             orderType: isPickup ? 'pickup' : 'delivery',
             deliveryAddress: deliveryAddress || {}, 
@@ -115,8 +122,8 @@ export const createOrderCheckoutSession = async (req, res, next) => {
 
         await newOrder.save();
 
-        // --- FIX: Robust URL Construction ---
-        const clientBaseUrl = config.clientUrls.customer; // e.g., "http://localhost:5173"
+        // 6. Create Stripe Session
+        const clientBaseUrl = config.clientUrls.customer; 
         const successUrl = `${clientBaseUrl}/booking/success?order_session_id={CHECKOUT_SESSION_ID}`;
         const failureUrl = `${clientBaseUrl}/booking/failure?order_session_id={CHECKOUT_SESSION_ID}`;
 
@@ -143,10 +150,12 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             success_url: successUrl,
             cancel_url: failureUrl,
             customer_email: user.email, 
+            // METADATA: Essential for Webhook processing & Invoice Generation
             metadata: {
                 orderId: newOrder._id.toString(),
                 cartType: cartField,
-                userId: userId.toString()
+                userId: userId.toString(),
+                type: 'order_payment' 
             }
         });
 
@@ -157,6 +166,47 @@ export const createOrderCheckoutSession = async (req, res, next) => {
 
     } catch (error) {
         logger.error("Error creating checkout session", { error: error.message, userId: req.user?._id });
+        next(error);
+    }
+};
+
+/**
+ * Endpoint to manually verify payment status from frontend success page.
+ * Acts as a backup if the Webhook is delayed.
+ */
+export const verifyPaymentStatus = async (req, res, next) => {
+    try {
+        const { sessionId } = req.body;
+        if(!sessionId) return res.status(400).json({success: false, message: "Session ID required"});
+
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if(!session || !session.metadata || !session.metadata.orderId) {
+             return res.status(404).json({success: false, message: "Invalid Session"});
+        }
+
+        const orderId = session.metadata.orderId;
+        const order = await Order.findById(orderId).populate('customerId').populate('restaurantId');
+        
+        if(!order) return res.status(404).json({success: false, message: "Order not found"});
+
+        // If Stripe says paid but DB says pending, update it now
+        if (session.payment_status === 'paid' && order.paymentStatus !== 'paid') {
+            order.paymentStatus = 'paid';
+            
+            // Only move status if it was still stuck in awaiting_payment
+            if (order.status === 'awaiting_payment') {
+                order.status = 'placed';
+            }
+            
+            await order.save();
+
+            // Trigger Invoice Email immediately (Backup to Webhook)
+            await sendOrderInvoiceEmail(order);
+        }
+
+        return res.status(200).json({ success: true, status: order.paymentStatus });
+    } catch (error) {
+        logger.error("Verify payment failed", {error: error.message});
         next(error);
     }
 };
