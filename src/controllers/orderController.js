@@ -32,7 +32,6 @@ export const placeCashOrder = async (req, res, next) => {
                 throw { statusCode: 400, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." };
             }
             
-            // Validate Phone Number
             if (!phoneNumber) {
                 throw { statusCode: 400, message: "Contact phone number is required." };
             }
@@ -86,30 +85,30 @@ export const placeCashOrder = async (req, res, next) => {
             // Calculate Pricing
             const { pricing } = calculateOrderPricing(processedItems, deliveryFee, restaurant);
 
-            // 7. Format Address
+            // 7. Format Address (FIXED: Mapped correctly to Schema)
             const formattedAddress = {
-                fullAddress: deliveryAddress?.addressLine1 || deliveryAddress?.fullAddress || "Self Pickup",
+                addressLine1: deliveryAddress?.addressLine1 || deliveryAddress?.fullAddress || "Self Pickup",
+                city: deliveryAddress?.city || restaurant.address.city || "",
                 landmark: deliveryAddress?.landmark || "",
                 coordinates: deliveryAddress?.coordinates || { type: 'Point', coordinates: [0, 0] }
             };
 
             // 8. Create Order
-            // Note: We explicitly store email in customerDetails for invoice generation later
             const orderData = new Order({
                 orderNumber: generateUniqueOrderNumber(),
                 restaurantId,
                 customerId: userId,
                 customerDetails: { 
                     name: user.fullName, 
-                    phoneNumber: phoneNumber, // Use the provided phone number
-                    email: user.email // Store email for invoice
+                    phoneNumber: phoneNumber, 
+                    email: user.email 
                 },
                 orderType: validOrderType,
                 deliveryAddress: formattedAddress,
                 orderedItems: processedItems,
                 pricing,
                 paymentType: 'cash',
-                paymentStatus: 'pending', // Invoice Pending
+                paymentStatus: 'pending', 
                 acceptanceStatus: 'pending', 
                 status: 'placed', 
                 notes: notes || '',

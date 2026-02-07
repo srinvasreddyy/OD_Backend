@@ -6,7 +6,7 @@ import {
   verifyOTP,
   loginSuperAdmin,
   loginDeliveryPartner,
-  getCurrentUser // <-- NEW IMPORT
+  getCurrentUser
 } from "../controllers/authController.js";
 import {
   requestOwnerOTP,
@@ -14,8 +14,8 @@ import {
 } from "../controllers/ownerAuthController.js";
 import { googleCallback } from "../controllers/googleAuthController.js";
 import config from "../config/env.js";
-// Import the validation middleware
 import { validateDeliveryPartner } from "../middleware/validateDeliveryPartner.js";
+import { validateUser } from "../middleware/validateUser.js";
 
 const router = express.Router();
 
@@ -24,9 +24,11 @@ router.post("/register", registerUser);
 router.post("/request-otp", requestOTP);
 router.post("/verify-otp", verifyOTP);
 
+// [CRITICAL] Session Re-hydration Route for OAuth & Persistent Login
+router.get("/me", validateUser, getCurrentUser); 
+
 // --- Delivery Partner Routes ---
 router.post("/delivery-partner/login", loginDeliveryPartner);
-// NEW ROUTE: This handles the fetchProfile call from the Dashboard
 router.get("/delivery-partner/me", validateDeliveryPartner, getCurrentUser); 
 
 // --- Super Admin Login Route ---
@@ -40,13 +42,14 @@ router.post("/owner/verify-otp", verifyOwnerOTP);
 router.post("/logout", (req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
-    sameSite: "Strict",
+    sameSite: config.nodeEnv === 'production' ? 'None' : 'Lax',
     secure: config.nodeEnv === 'production',
+    domain: config.nodeEnv === 'production' ? '.loksar.co.uk' : undefined
   });
-  res.status(200).json({ message: "Logged out successfully" });
+  res.status(200).json({ success: true, message: "Logged out successfully" });
 });
 
-// --- Google OAuth Routes   ---
+// --- Google OAuth Routes ---
 router.get(
   "/google",
   passport.authenticate("google", { scope: ["profile", "email"], session: false })

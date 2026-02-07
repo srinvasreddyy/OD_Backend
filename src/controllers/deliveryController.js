@@ -60,7 +60,7 @@ export const getAssignedOrders = async (req, res, next) => {
         }
 
         const orders = await Order.find(query)
-            .populate('restaurantId', 'restaurantName address')
+            .populate('restaurantId', 'restaurantName address phoneNumber') // Added phoneNumber
             .populate('customerId', 'fullName')
             .sort({ createdAt: -1 })
             .limit(limit)

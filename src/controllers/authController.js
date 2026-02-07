@@ -6,8 +6,6 @@ import { sendOTPEmail } from "../utils/MailUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
 
-// ... [Keep other functions like registerUser, requestOTP, verifyOTP, loginSuperAdmin, loginDeliveryPartner unchanged] ...
-
 /**
  * @description Registers a new user of type 'customer'.
  * @route POST /api/auth/register
@@ -67,6 +65,7 @@ export const requestOTP = async (req, res, next) => {
         return res.status(404).json({ success: false, message: "No account found with this email. Please register first." });
     }
     
+    // Allow delivery partners to also login via OTP if needed, or restrict as per business logic
     if (user.userType !== 'customer' && user.userType !== 'delivery_partner') {
         return res.status(403).json({ success: false, message: "This login is for customers and delivery partners only." });
     }
@@ -124,8 +123,8 @@ export const verifyOTP = async (req, res, next) => {
     res.cookie("token", token, {
       httpOnly: true,
       secure: config.nodeEnv === "production",
-      sameSite: "Strict",
-      maxAge: 2 * 60 * 60 * 1000,
+      sameSite: config.nodeEnv === "production" ? "None" : "Lax",
+      maxAge: 24 * 60 * 60 * 1000,
     });
     
     const userResponse = {
@@ -253,13 +252,15 @@ export const loginDeliveryPartner = async (req, res, next) => {
 
 /**
  * @description Gets the current logged-in user's profile.
- * @route GET /api/auth/delivery-partner/me
+ * @route GET /api/auth/me OR /api/auth/delivery-partner/me
  * @access Private
  */
 export const getCurrentUser = async (req, res, next) => {
     try {
+        // req.user is set by the validateUser middleware
         const userId = req.user._id;
-        // FIX: Populate restaurantId to get restaurantName
+        
+        // Populate restaurantId if it exists (useful for owners/partners), harmless for customers
         const user = await User.findById(userId).populate('restaurantId', 'restaurantName');
         
         if (!user) {
