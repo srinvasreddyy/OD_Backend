@@ -20,7 +20,7 @@ const stripe = new Stripe(config.stripe.secretKey);
  */
 export const placeCashOrder = async (req, res, next) => {
     // 1. Extract inputs
-    const { cartType, deliveryAddress, notes, orderType } = req.body;
+    const { cartType, deliveryAddress, notes, orderType, phoneNumber } = req.body;
     const userId = req.user?._id;
 
     const dbSession = await mongoose.startSession();
@@ -32,6 +32,11 @@ export const placeCashOrder = async (req, res, next) => {
                 throw { statusCode: 400, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." };
             }
             
+            // Validate Phone Number
+            if (!phoneNumber) {
+                throw { statusCode: 400, message: "Contact phone number is required." };
+            }
+
             const validOrderType = ['delivery', 'pickup'].includes(orderType) ? orderType : 'delivery';
 
             if (validOrderType === 'delivery' && (!deliveryAddress || !deliveryAddress.coordinates)) {
@@ -96,7 +101,7 @@ export const placeCashOrder = async (req, res, next) => {
                 customerId: userId,
                 customerDetails: { 
                     name: user.fullName, 
-                    phoneNumber: user.phoneNumber,
+                    phoneNumber: phoneNumber, // Use the provided phone number
                     email: user.email // Store email for invoice
                 },
                 orderType: validOrderType,

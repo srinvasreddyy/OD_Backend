@@ -7,6 +7,7 @@ import RestaurantTimings from "../models/RestaurantTimings.js";
 import uploadOnCloudinary from "../config/cloudinary.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
+// Removed generateJWT import as it's no longer needed for registration
 
 // Initialize Stripe with Platform Secret Key
 const stripe = new Stripe(config.stripe.secretKey);
@@ -101,7 +102,7 @@ const handleFileUploads = async (files) => {
 // --- Main Controllers ---
 
 /**
- * @description Registers a new restaurant owner. Creates Stripe Connect Account only if enabled.
+ * @description Registers a new restaurant owner.
  * @route POST /api/ownerRegistration/register
  * @access Public
  */
@@ -123,19 +124,16 @@ export const registerOwner = async (req, res, next) => {
       throw error;
     }
     
-    // Determine if we should create a Stripe Account
-    // IT MUST be enabled globally AND requested by the user
+    // Create Stripe Account ID (if enabled)
     const shouldCreateStripeAccount = config.featureFlags.enableOnlinePayments && parsedAcceptsOnlineOrders;
 
     let stripeAccountId = undefined;
     let stripeAccountStatus = 'none';
-    let accountLink = null;
 
     if (shouldCreateStripeAccount) {
-        // 1. Create Stripe Express Account
         const account = await stripe.accounts.create({
           type: 'express',
-          country: 'GB', // Defaulting to UK based on phone regex in model
+          country: 'GB', 
           email: email,
           capabilities: {
             card_payments: { requested: true },
@@ -150,7 +148,7 @@ export const registerOwner = async (req, res, next) => {
     
     const restaurant = new Restaurant({
       ...validatedData,
-      acceptsOnlineOrders: shouldCreateStripeAccount, // Force false if global switch is off
+      acceptsOnlineOrders: shouldCreateStripeAccount, 
       password: password,
       address: parsedAddress,
       deliverySettings: parsedDeliverySettings,
@@ -205,30 +203,13 @@ export const registerOwner = async (req, res, next) => {
     await Promise.all(dbPromises);
     await session.commitTransaction();
 
-    // 2. Generate Account Link for Onboarding (Only if Stripe Account Created)
-    let stripeOnboardingUrl = null;
+    // --- NO AUTO LOGIN ---
+    // User is created but must wait for approval.
     
-    if (shouldCreateStripeAccount && stripeAccountId) {
-        // Note: clientUrls.restaurant should point to the frontend restaurant dashboard
-        const refreshUrl = `${config.clientUrls.restaurant}/onboarding-refresh`;
-        const returnUrl = `${config.clientUrls.restaurant}/onboarding-complete`;
-
-        accountLink = await stripe.accountLinks.create({
-          account: stripeAccountId,
-          refresh_url: refreshUrl,
-          return_url: returnUrl,
-          type: 'account_onboarding',
-        });
-        stripeOnboardingUrl = accountLink.url;
-    }
-
     res.status(201).json({
       success: true,
-      message: stripeOnboardingUrl 
-        ? "Owner registered successfully. Please complete Stripe onboarding." 
-        : "Owner registered successfully.",
-      restaurantId,
-      stripeOnboardingUrl // Can be null
+      message: "Registration successful. Please wait for Super Admin approval.",
+      restaurantId
     });
 
   } catch (error) {

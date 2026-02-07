@@ -14,7 +14,9 @@ const orderSchema = new mongoose.Schema({
       required: true 
   },
   deliveryAddress: {
-      addressLine1: String,
+      fullAddress: String, // New Format
+      addressLine1: String, // RESTORED: Legacy Format
+      landmark: String,
       city: String,
       coordinates: {
           type: { type: String, enum: ['Point'], default: 'Point' },
@@ -35,7 +37,7 @@ const orderSchema = new mongoose.Schema({
       subtotal: Number,
       deliveryFee: Number,
       handlingCharge: Number,
-      platformFee: Number, // Added field
+      platformFee: Number,
       discountAmount: Number,
       totalAmount: Number
   },
@@ -44,7 +46,6 @@ const orderSchema = new mongoose.Schema({
   acceptanceStatus: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
   status: { 
       type: String, 
-      // 'awaiting_payment' is crucial for the new flow
       enum: ['awaiting_payment', 'placed', 'preparing', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'cancelled'], 
       default: 'awaiting_payment' 
   },

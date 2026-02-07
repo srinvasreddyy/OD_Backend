@@ -20,11 +20,16 @@ export const createOrderCheckoutSession = async (req, res, next) => {
         }
 
         const userId = req.user._id;
-        const { cartType, deliveryAddress, orderType } = req.body; 
+        const { cartType, deliveryAddress, orderType, phoneNumber } = req.body; 
 
         // 1. Validate Input
         if (!cartType || !['foodCart', 'groceriesCart'].includes(cartType)) {
             return res.status(400).json({ success: false, message: "A valid cartType ('foodCart' or 'groceriesCart') is required." });
+        }
+
+        // Validate Phone Number
+        if (!phoneNumber) {
+             return res.status(400).json({ success: false, message: "Contact phone number is required." });
         }
         
         const isPickup = orderType === 'pickup';
@@ -105,7 +110,7 @@ export const createOrderCheckoutSession = async (req, res, next) => {
             customerId: userId,
             customerDetails: { 
                 name: user.fullName || "Customer", 
-                phoneNumber: user.phoneNumber,
+                phoneNumber: phoneNumber, // Use the provided phone number
                 email: user.email // Crucial for Invoice
             },
             orderType: isPickup ? 'pickup' : 'delivery',
