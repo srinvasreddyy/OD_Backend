@@ -28,7 +28,7 @@ import bookingRoutes from "./src/routes/booking.routes.js";
 import announcementsRoutes from "./src/routes/announcements.routes.js";
 import userRoutes from "./src/routes/user.routes.js";
 import webhookController from "./src/controllers/webhookController.js";
-
+import locationRoutes from './src/routes/location.routes.js';
 dotenv.config();
 
 const app = express();
@@ -68,6 +68,10 @@ app.use(
         "http://localhost:5175", 
         "http://localhost:5176", 
         config.clientUrls.customer, 
+        "https://admin.loksar.co.uk",
+        "https://delivery.loksar.co.uk",
+        "https://superadmin.loksar.co.uk",
+        "https://orders.loksar.co.uk",
         config.clientUrls.admin, 
         config.clientUrls.restaurant
     ].filter(Boolean), 
@@ -109,7 +113,7 @@ app.use("/api/tables", tableRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/announcements", announcementsRoutes);
 app.use("/api/users", userRoutes);
-
+app.use('/api/location', locationRoutes);
 // ==========================================
 // 4. ERROR HANDLING
 // ==========================================

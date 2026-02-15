@@ -1,4 +1,3 @@
-// OD_Backend/src/controllers/ownerAuthController.js
 import Restaurant from "../models/Restaurant.js";
 import { generateOTP, isOTPExpired } from "../utils/OtpUtils.js";
 import { generateJWT } from "../utils/JwtUtils.js";
@@ -26,13 +25,27 @@ export const requestOwnerOTP = async (req, res, next) => {
 
     if (!owner) {
       logger.warn(`OTP request for non-existent owner email: ${email}. No OTP was sent.`);
+      // Security: Don't reveal if email exists or not
       return res.status(200).json({ message: "If a matching account exists, an OTP has been sent to the owner's email." });
     }
 
+    logger.info(`Attempting to send Owner OTP to ${email} (Provider: Gmail/Hostinger)...`);
+    
+    // This await will fail if the mailer configuration is wrong
     await sendOTPEmail(email, otp);
+    
+    logger.info(`Owner OTP sent successfully to ${email}`);
     res.status(200).json({ message: "OTP sent to owner's email." });
+
   } catch (error) {
-    logger.error("Error requesting owner OTP", { error: error.message });
+    // Log the EXACT error from Nodemailer/Hostinger
+    logger.error("Error requesting owner OTP", { error: error.message, stack: error.stack });
+    
+    // If in development or simple error reporting is needed, we can send 500
+    // But usually we pass to global error handler
+    if (config.nodeEnv === 'development') {
+         return res.status(500).json({ message: "Email sending failed", error: error.message });
+    }
     next(error);
   }
 };

@@ -1,3 +1,4 @@
+//
 import mongoose from "mongoose";
 import Restaurant from "../models/Restaurant.js";
 import RestaurantDocuments from "../models/RestaurantDocuments.js";
@@ -18,7 +19,7 @@ export const getRestaurants = async (req, res, next) => {
         const { page, limit, skip } = getPaginationParams(req.query); 
 
         const pipeline = [];
-        const matchStage = { isActive: true };
+        const matchStage = {}; 
         
         if (type) {
             if (type === 'food_delivery') {
@@ -45,10 +46,20 @@ export const getRestaurants = async (req, res, next) => {
         if (acceptsDining === 'true') matchStage.acceptsDining = true;
         
         pipeline.push({ $match: matchStage });
+        
         pipeline.push({
             $lookup: { from: "restaurantdocuments", localField: "_id", foreignField: "restaurantId", as: "documents" }
         });
         pipeline.push({ $match: { "documents.verificationStatus": "approved" } });
+
+        pipeline.push({
+            $lookup: { 
+                from: "restauranttimings", 
+                localField: "_id", 
+                foreignField: "restaurantId", 
+                as: "timingsData" 
+            }
+        });
         
         const countPipeline = [...pipeline, { $count: "total" }];
         const countResult = await Restaurant.aggregate(countPipeline);
@@ -63,7 +74,7 @@ export const getRestaurants = async (req, res, next) => {
                 password: 0,
                 currentOTP: 0,
                 otpGeneratedAt: 0,
-                stripeAccountId: 0, // Exclude connect ID
+                stripeAccountId: 0, 
                 documents: 0
             }
         });
@@ -85,7 +96,65 @@ export const getRestaurants = async (req, res, next) => {
                 const maxRadius = rest.deliverySettings?.maxDeliveryRadius || 0;
                 if (distanceMiles > maxRadius) isDeliverable = false;
             }
-            return { ...rest, distanceMiles, isDeliverable };
+
+            // --- Availability & Closing Time Logic ---
+            let isClosed = false;
+            let closedReason = "";
+            let nextCloseTime = null;
+            let minutesToClose = null;
+
+            if (!rest.isActive) {
+                isClosed = true;
+                closedReason = "Temporarily Closed";
+            } else {
+                const timingsEntry = rest.timingsData?.[0]; 
+                
+                if (timingsEntry && timingsEntry.timings) {
+                    const now = new Date();
+                    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+                    const currentDay = days[now.getDay()];
+                    
+                    const todaySchedule = timingsEntry.timings.find(t => t.day === currentDay);
+                    
+                    if (!todaySchedule || !todaySchedule.isOpen) {
+                        isClosed = true;
+                        closedReason = "Closed Today";
+                    } else if (todaySchedule.openTime && todaySchedule.closeTime) {
+                        // Compare Times in Minutes
+                        const currentTimeMinutes = now.getHours() * 60 + now.getMinutes();
+                        
+                        const [openH, openM] = todaySchedule.openTime.split(':').map(Number);
+                        const [closeH, closeM] = todaySchedule.closeTime.split(':').map(Number);
+                        
+                        const openMinutes = openH * 60 + openM;
+                        const closeMinutes = closeH * 60 + closeM;
+
+                        if (currentTimeMinutes < openMinutes) {
+                            isClosed = true;
+                            closedReason = `Opens at ${todaySchedule.openTime}`;
+                        } else if (currentTimeMinutes >= closeMinutes) {
+                            isClosed = true;
+                            closedReason = "Closed Now";
+                        } else {
+                            // Restaurant is OPEN. Calculate time remaining.
+                            minutesToClose = closeMinutes - currentTimeMinutes;
+                            nextCloseTime = todaySchedule.closeTime;
+                        }
+                    }
+                }
+            }
+
+            const { timingsData, ...restWithoutTimings } = rest;
+
+            return { 
+                ...restWithoutTimings, 
+                distanceMiles, 
+                isDeliverable, 
+                isClosed,
+                closedReason,
+                nextCloseTime,   // e.g., "22:00"
+                minutesToClose   // e.g., 45
+            };
         });
 
         return res.status(200).json({
@@ -112,7 +181,6 @@ export const getRestaurantById = async (req, res, next) => {
             return res.status(404).json({ success: false, message: "Restaurant not found or has not been approved." });
         }
 
-        // Updated projection: Exclude stripeAccountId
         const restaurant = await Restaurant.findOne({ _id: id, isActive: true })
             .select('-password -currentOTP -otpGeneratedAt -stripeAccountId');
 
@@ -187,9 +255,6 @@ export const updateRestaurantSettings = async (req, res, next) => {
         if (typeof acceptsDining === 'boolean') {
             updateData.acceptsDining = acceptsDining;
         }
-
-        // Logic for stripeSecretKey removal: We do NOT allow updating it here anymore.
-        // It is managed via Stripe Connect OAuth/Onboarding.
 
         if (Object.keys(updateData).length === 0) {
             return res.status(400).json({ success: false, message: "No settings fields to update were provided." });

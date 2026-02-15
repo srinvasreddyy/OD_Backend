@@ -3,8 +3,12 @@ import logger from './logger.js';
 import config from '../config/env.js';
 import { generateInvoicePDF } from './InvoiceGenerator.js';
 
+// HOSTINGER CONFIGURATION CHANGE:
+// Hostinger blocks Port 587 (STARTTLS). We must use Port 465 (SSL).
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true, // true for 465, false for other ports
   auth: {
     user: config.email.user,
     pass: config.email.pass,
@@ -27,6 +31,9 @@ export const sendOTPEmail = async (email, otp) => {
   `;
 
   try {
+    // Optional: Verify connection before sending to debug Hostinger connectivity
+    // await transporter.verify();
+
     await transporter.sendMail({
         from: config.email.user,
         to: email,
@@ -35,8 +42,9 @@ export const sendOTPEmail = async (email, otp) => {
     });
     logger.info(`OTP email sent successfully to ${email}`);
   } catch (error) {
-    logger.error('OTP email send failed', { email: email, error: error.message });
-    throw new Error('Email could not be sent.');
+    // Log full error stack for debugging on Hostinger logs
+    logger.error('OTP email send failed', { email: email, error: error.message, stack: error.stack });
+    throw new Error(`Email sending failed: ${error.message}`);
   }
 };
 

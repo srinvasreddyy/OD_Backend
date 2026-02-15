@@ -1,3 +1,4 @@
+//
 import mongoose from "mongoose";
 
 const orderSchema = new mongoose.Schema({
@@ -31,6 +32,7 @@ const orderSchema = new mongoose.Schema({
       quantity: Number,
       selectedVariants: [],
       selectedAddons: [],
+      instructions: String, // NEW: Added instructions field
       itemTotal: Number
   }],
   pricing: {

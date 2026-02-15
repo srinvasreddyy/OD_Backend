@@ -8,7 +8,7 @@ import { calculateOrderPricing, processOrderItems, calculateDeliveryFee } from "
 
 // --- Helper Functions ---
 
-const generateCartItemKey = ({ menuItemId, selectedVariants, selectedAddons }) => {
+const generateCartItemKey = ({ menuItemId, selectedVariants, selectedAddons, instructions }) => {
     // Robust Key Generation: Sorts IDs to ensure uniqueness regardless of order
     const variantPart = (Array.isArray(selectedVariants) ? selectedVariants : [])
         .map(v => `${v.groupId}:${v.variantId}`)
@@ -19,11 +19,14 @@ const generateCartItemKey = ({ menuItemId, selectedVariants, selectedAddons }) =
         .map(a => a.addonId)
         .sort()
         .join('-');
+    
+    // Include instructions in key to separate items with different notes
+    const notesPart = instructions ? instructions.trim().toLowerCase().replace(/\s+/g, '_') : 'nonotes';
         
-    return `${menuItemId}_${variantPart || 'novar'}_${addonsPart || 'noaddons'}`;
+    return `${menuItemId}_${variantPart || 'novar'}_${addonsPart || 'noaddons'}_${notesPart}`;
 };
 
-const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVariants, selectedAddons) => {
+const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVariants, selectedAddons, instructions) => {
     if (!mongoose.Types.ObjectId.isValid(menuItemId)) {
         throw { status: 400, message: "Invalid Menu Item ID format." };
     }
@@ -47,7 +50,6 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
     const normalizedVariants = Array.isArray(selectedVariants) ? selectedVariants : [];
     if (normalizedVariants.length > 0) {
         for (const selection of normalizedVariants) {
-             // Robust String Comparison
              const group = menuItem.variantGroups?.find(g => String(g.groupId) === String(selection.groupId));
              if (!group) throw { status: 400, message: "Invalid variant group selected." };
              
@@ -96,7 +98,8 @@ const getAndValidateMenuItemDetails = async (menuItemId, quantity, selectedVaria
             menuItemId, 
             quantity, 
             selectedVariants: normalizedVariants, 
-            selectedAddons: normalizedAddons
+            selectedAddons: normalizedAddons,
+            instructions: instructions || "" // Include instructions in item data
         },
     };
 };
@@ -112,9 +115,9 @@ const clearAppliedPromo = (user) => {
 export const addItemToCart = async (req, res, next) => {
     try {
         const userId = req.user?._id;
-        const { menuItemId, quantity = 1, selectedVariants, selectedAddons } = req.body;
+        const { menuItemId, quantity = 1, selectedVariants, selectedAddons, instructions, clearCart } = req.body;
 
-        const { menuItem, cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariants, selectedAddons);
+        const { menuItem, cartField, restaurantId, itemData } = await getAndValidateMenuItemDetails(menuItemId, quantity, selectedVariants, selectedAddons, instructions);
 
         const user = await User.findById(userId).populate({
             path: `${cartField}.menuItemId`,
@@ -125,16 +128,30 @@ export const addItemToCart = async (req, res, next) => {
         }
 
         const existingCart = user[cartField];
+        
+        // CONFLICT CHECK LOGIC
         if (existingCart.length > 0 && existingCart[0].menuItemId) {
             const cartRestaurantId = existingCart[0].menuItemId.restaurantId.toString();
             if (cartRestaurantId !== restaurantId) {
-                clearAppliedPromo(user); 
-                return res.status(409).json({ message: "Your cart contains items from another restaurant. Please clear your cart to add items from this restaurant." });
+                if (clearCart) {
+                    // Explicitly requested to Replace Cart
+                    user[cartField] = []; // Wipe items
+                    clearAppliedPromo(user);
+                } else {
+                    // Return Conflict Error
+                    return res.status(409).json({ 
+                        message: "Your cart contains items from another restaurant. Replace cart?",
+                        conflict: true 
+                    });
+                }
             }
         }
 
+        // Re-fetch cart reference in case it was cleared
+        const targetCart = user[cartField]; 
+        
         const cartItemKey = generateCartItemKey(itemData);
-        const existingItem = existingCart.find(item => item.cartItemKey === cartItemKey);
+        const existingItem = targetCart.find(item => item.cartItemKey === cartItemKey);
 
         if (existingItem) {
             const newQuantity = existingItem.quantity + quantity;
@@ -143,7 +160,7 @@ export const addItemToCart = async (req, res, next) => {
             }
             existingItem.quantity = newQuantity;
         } else {
-            existingCart.push({ ...itemData, cartItemKey });
+            targetCart.push({ ...itemData, cartItemKey });
         }
 
         await user.save();
@@ -292,6 +309,8 @@ export const getCartSummary = async (req, res, next) => {
                 deliveryFee: calculatedDeliveryFee, 
                 deliveryError: deliveryError,
                 totalAmount: pricing.totalAmount,
+                // --- NEW FIELD: RESTAURANT ACTIVE STATUS ---
+                isRestaurantActive: restaurant.isActive 
             } 
         });
     } catch (error) {

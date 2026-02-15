@@ -1,3 +1,4 @@
+//
 import MenuItem from '../models/MenuItem.js';
 import { getDistanceFromLatLonInMiles } from './locationUtils.js';
 
@@ -31,7 +32,7 @@ export const processOrderItems = async (cart) => {
             throw new Error(`Item "${menuItem?.itemName || 'Unknown'}" is currently unavailable.`);
         }
         
-        const { quantity, selectedVariants, selectedAddons } = cartItem;
+        const { quantity, selectedVariants, selectedAddons, instructions } = cartItem;
         
         // Start with Base Price
         let unitPrice = parseFloat(menuItem.basePrice || 0);
@@ -90,6 +91,7 @@ export const processOrderItems = async (cart) => {
             quantity: Number(quantity),
             selectedVariants: variantsDetails,
             selectedAddons: addonsDetails,
+            instructions: instructions || "", 
             itemTotal: unitPrice * Number(quantity),
         };
     });
