@@ -28,7 +28,10 @@ export const getAvailableSlots = async (req, res, next) => {
         searchDate.setUTCHours(0, 0, 0, 0);
         
         const guestCount = parseInt(guests, 10);
+        
+        // Use a 30-minute buffer for booking
         const now = new Date();
+        const bufferTime = new Date(now.getTime() + 30 * 60000); 
 
         // 1. Fetch Inventory (Tables)
         const availableTables = await Table.find({
@@ -61,9 +64,6 @@ export const getAvailableSlots = async (req, res, next) => {
             existingBookings.filter(b => b.tableId.toString() === table._id.toString()).forEach(b => {
                 if(b.bookedSlots && b.bookedSlots.length > 0) {
                     b.bookedSlots.forEach(s => bookedSlots.add(s));
-                } else {
-                    const h = new Date(b.bookingDate).getUTCHours();
-                    bookedSlots.add(`${String(h).padStart(2,'0')}:00`);
                 }
             });
 
@@ -81,7 +81,8 @@ export const getAvailableSlots = async (req, res, next) => {
                 const slotDateTime = new Date(table.date); 
                 slotDateTime.setUTCHours(h, m, 0, 0);
                 
-                if (slotDateTime < now) return false;
+                // STRICT CHECK: Ensure slot is in the future + buffer
+                if (slotDateTime < bufferTime) return false;
 
                 return true;
             });
