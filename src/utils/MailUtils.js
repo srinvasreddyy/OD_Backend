@@ -15,6 +15,40 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+
+export const sendNewBookingNotification = async (restaurantEmail, bookingDetails) => {
+  const htmlContent = `
+  <!DOCTYPE html>
+  <html>
+  <body style="font-family: Arial, sans-serif; padding: 20px; background-color: #f4f4f4;">
+    <div style="max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; border-left: 5px solid #2563eb;">
+      <h2 style="color: #2c3e50;">New Table Reservation!</h2>
+      <p><strong>Table:</strong> ${bookingDetails.tableNumber}</p>
+      <p><strong>Date:</strong> ${new Date(bookingDetails.date).toLocaleDateString()}</p>
+      <p><strong>Slots:</strong> ${bookingDetails.slots.join(', ')}</p>
+      <p><strong>Guests:</strong> ${bookingDetails.guests}</p>
+      <p><strong>Customer:</strong> ${bookingDetails.customerName} (${bookingDetails.customerPhone || 'No phone'})</p>
+      <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+      <p style="color: #e67e22; font-weight: bold;">Status: Confirmed & Paid</p>
+      <p style="font-size: 12px; color: #888;">Please ensure the table is ready. You cannot cancel this booking.</p>
+    </div>
+  </body>
+  </html>
+  `;
+
+  try {
+    await transporter.sendMail({
+        from: config.email.user,
+        to: restaurantEmail,
+        subject: `New Booking: Table ${bookingDetails.tableNumber}`,
+        html: htmlContent,
+    });
+    logger.info(`Booking notification sent to ${restaurantEmail}`);
+  } catch (error) {
+    logger.error('Failed to send booking notification', { error: error.message });
+  }
+};
+
 export const sendOTPEmail = async (email, otp) => {
   const htmlContent = `
   <!DOCTYPE html>

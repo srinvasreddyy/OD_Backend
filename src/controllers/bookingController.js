@@ -7,6 +7,7 @@ import SlotLock from "../models/SlotLock.js";
 import { generateUniqueOrderNumber } from "../utils/orderUtils.js";
 import logger from "../utils/logger.js";
 import config from "../config/env.js";
+import { sendNewBookingNotification, sendOrderInvoiceEmail } from "../utils/MailUtils.js";
 
 const areSlotsSequential = (slots) => {
     if (!slots || slots.length < 2) return true;
@@ -47,10 +48,16 @@ export const getAvailableSlots = async (req, res, next) => {
 
         const tableIds = availableTables.map(t => t._id);
         
-        // 2. Fetch Confirmed & Pending Bookings
+        // 2. Fetch Bookings (Robust Logic)
+        // We only consider 'pending' bookings valid if they were created in the last 10 minutes.
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
         const existingBookings = await Booking.find({
             tableId: { $in: tableIds },
-            status: { $in: ['confirmed', 'pending'] }
+            $or: [
+                { status: 'confirmed' },
+                { status: 'pending', createdAt: { $gt: tenMinutesAgo } } // IGNORE STALE PENDING BOOKINGS
+            ]
         }).select('tableId bookedSlots bookingDate').lean();
         
         // 3. Fetch Temporary Locks
@@ -160,7 +167,6 @@ export const createBookingCheckoutSession = async (req, res, next) => {
             })), { session: dbSession });
 
             const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-            // Price per hour/slot
             const pricePerSlot = table.bookingPrice > 0 ? table.bookingPrice : 1; 
 
             const clientBaseUrl = config.clientUrls.customer;
@@ -178,7 +184,6 @@ export const createBookingCheckoutSession = async (req, res, next) => {
                         },
                         unit_amount: Math.round(pricePerSlot * 100), 
                     },
-                    // FIX: Quantity represents hours booked.
                     quantity: slots.length, 
                 }],
                 mode: "payment",
@@ -199,8 +204,6 @@ export const createBookingCheckoutSession = async (req, res, next) => {
             };
 
             const stripeSession = await stripe.checkout.sessions.create(sessionConfig);
-            
-            // Calculate Total Fee to store in DB
             const totalFee = pricePerSlot * slots.length;
 
             const pendingBooking = new Booking({
@@ -247,7 +250,14 @@ export const confirmBooking = async (req, res, next) => {
     try {
         let confirmedBooking;
         await dbSession.withTransaction(async () => {
-            const booking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId }).session(dbSession);
+            const booking = await Booking.findOne({ 'paymentDetails.sessionId': sessionId })
+                .populate({
+                    path: 'restaurantId',
+                    select: '+stripeAccountId email restaurantName ownerFullName'
+                })
+                .populate('customerId', 'fullName phoneNumber email')
+                .populate('tableId', 'tableNumber')
+                .session(dbSession);
             
             if (!booking) throw { statusCode: 404, message: "Booking not found." };
             
@@ -255,9 +265,6 @@ export const confirmBooking = async (req, res, next) => {
                 confirmedBooking = booking;
                 return;
             }
-
-            const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeAccountId').session(dbSession);
-            if (!restaurant || !restaurant.stripeAccountId) throw new Error("Restaurant payment configuration missing.");
 
             const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
             const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
@@ -287,6 +294,21 @@ export const confirmBooking = async (req, res, next) => {
                  }).session(dbSession);
             }
         });
+        
+        if (confirmedBooking) {
+            await sendOrderInvoiceEmail(confirmedBooking);
+
+            if (confirmedBooking.restaurantId?.email) {
+                await sendNewBookingNotification(confirmedBooking.restaurantId.email, {
+                    tableNumber: confirmedBooking.tableId.tableNumber,
+                    date: confirmedBooking.bookingDate,
+                    slots: confirmedBooking.bookedSlots,
+                    guests: confirmedBooking.guests,
+                    customerName: confirmedBooking.customerId.fullName,
+                    customerPhone: confirmedBooking.customerId.phoneNumber
+                });
+            }
+        }
         
         return res.status(200).json({
             success: true,
@@ -384,21 +406,35 @@ export const getCustomerBookings = async (req, res, next) => {
 export const getRestaurantBookings = async (req, res, next) => {
     try {
         const restaurantId = req.restaurant._id;
-        const { status, date } = req.query;
+        const { status, date, startDate, endDate } = req.query;
         
         const query = { restaurantId };
         if (status) query.status = status;
         
-        if (date) {
-            const startDate = new Date(date);
-            startDate.setUTCHours(0, 0, 0, 0);
-            const endDate = new Date(date);
-            endDate.setUTCHours(23, 59, 59, 999);
-            query.bookingDate = { $gte: startDate, $lte: endDate };
+        // SUPPORT RANGE OR SINGLE DATE
+        if (startDate || endDate) {
+             const dateQuery = {};
+             if (startDate) {
+                 const start = new Date(startDate);
+                 start.setUTCHours(0, 0, 0, 0);
+                 dateQuery.$gte = start;
+             }
+             if (endDate) {
+                 const end = new Date(endDate);
+                 end.setUTCHours(23, 59, 59, 999);
+                 dateQuery.$lte = end;
+             }
+             query.bookingDate = dateQuery;
+        } else if (date) {
+            const start = new Date(date);
+            start.setUTCHours(0, 0, 0, 0);
+            const end = new Date(date);
+            end.setUTCHours(23, 59, 59, 999);
+            query.bookingDate = { $gte: start, $lte: end };
         }
 
         const bookings = await Booking.find(query)
-            .populate('customerId', 'fullName email')
+            .populate('customerId', 'fullName email phoneNumber') // Added phoneNumber
             .populate('tableId', 'tableNumber capacity')
             .sort({ bookingDate: -1 });
 
@@ -409,82 +445,97 @@ export const getRestaurantBookings = async (req, res, next) => {
     }
 };
 
-const cancelAndRefundBooking = async (booking, dbSession, statusToSet) => {
-    const restaurant = await Restaurant.findById(booking.restaurantId).select('+stripeAccountId').session(dbSession);
-    if (!restaurant || !restaurant.stripeAccountId) throw new Error("Restaurant payment configuration not found.");
-    
-    if (booking.paymentDetails.paymentStatus === 'paid') {
-        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-        const checkoutSession = await stripe.checkout.sessions.retrieve(booking.paymentDetails.sessionId);
-
-        if (checkoutSession.payment_intent) {
-            await stripe.refunds.create({ 
-                payment_intent: checkoutSession.payment_intent,
-                reverse_transfer: true 
-            });
-            booking.paymentDetails.paymentStatus = 'refunded';
-        }
-    }
-    booking.status = statusToSet;
-    return await booking.save({ session: dbSession });
-};
-
 export const cancelBookingByUser = async (req, res, next) => {
-    const { bookingId } = req.params;
-    const customerId = req.user._id;
-
-    const dbSession = await mongoose.startSession();
-    try {
-        let updatedBooking;
-        await dbSession.withTransaction(async () => {
-            const booking = await Booking.findOne({ _id: bookingId, customerId }).session(dbSession);
-
-            if (!booking) throw { statusCode: 404, message: "Booking not found." };
-            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `Cannot cancel booking with status '${booking.status}'.` };
-
-            const now = new Date();
-            const bookingTime = new Date(booking.bookingDate);
-            const firstSlot = booking.bookedSlots[0] || "00:00";
-            const [h, m] = firstSlot.split(':').map(Number);
-            bookingTime.setUTCHours(h, m, 0, 0);
-
-            const hoursDifference = (bookingTime - now) / (1000 * 60 * 60);
-
-            if (hoursDifference < 5) throw { statusCode: 403, message: "Booking cannot be cancelled within 5 hours of the scheduled time." };
-            
-            updatedBooking = await cancelAndRefundBooking(booking, dbSession, 'cancelled_by_user');
-        });
-        
-        return res.status(200).json({ success: true, message: "Booking cancelled and refunded.", data: updatedBooking });
-    } catch (error) {
-        logger.error("Error cancelling booking by user", { error: error.message, bookingId });
-        res.status(error.statusCode || 500).json({ success: false, message: error.message });
-    } finally {
-        dbSession.endSession();
-    }
+    return res.status(403).json({ 
+        success: false, 
+        message: "Confirmed bookings cannot be cancelled. Please contact the restaurant directly." 
+    });
 };
 
 export const cancelBookingByOwner = async (req, res, next) => {
+    return res.status(403).json({ 
+        success: false, 
+        message: "This booking is confirmed and paid. You cannot cancel it through the system." 
+    });
+};
+
+// --- NEW MANUAL RELEASE FUNCTION ---
+export const expireBooking = async (req, res, next) => {
     const { bookingId } = req.params;
     const restaurantId = req.restaurant._id;
 
     const dbSession = await mongoose.startSession();
     try {
-        let updatedBooking;
         await dbSession.withTransaction(async () => {
             const booking = await Booking.findOne({ _id: bookingId, restaurantId }).session(dbSession);
 
             if (!booking) throw { statusCode: 404, message: "Booking not found." };
-            if (booking.status !== 'confirmed') throw { statusCode: 400, message: `Cannot cancel booking with status '${booking.status}'.` };
+            if (booking.status !== 'pending') throw { statusCode: 400, message: "Only pending bookings can be force-released." };
 
-            updatedBooking = await cancelAndRefundBooking(booking, dbSession, 'cancelled_by_owner');
+            booking.status = 'cancelled_by_owner'; 
+            booking.paymentDetails.paymentStatus = 'failed';
+            await booking.save({ session: dbSession });
+
+            // FORCE DELETE LOCKS
+            if (booking.bookedSlots && booking.bookedSlots.length > 0) {
+                 const dateBase = new Date(booking.bookingDate);
+                 const year = dateBase.getUTCFullYear();
+                 const month = dateBase.getUTCMonth();
+                 const day = dateBase.getUTCDate();
+
+                 const lockTimes = booking.bookedSlots.map(s => {
+                     const [h, m] = s.split(':');
+                     return new Date(Date.UTC(year, month, day, parseInt(h), parseInt(m), 0));
+                 });
+                 
+                 await SlotLock.deleteMany({
+                     tableId: booking.tableId,
+                     bookingTime: { $in: lockTimes }
+                 }).session(dbSession);
+            }
         });
         
-        return res.status(200).json({ success: true, message: "Booking cancelled and refunded.", data: updatedBooking });
+        return res.status(200).json({ success: true, message: "Booking released and slots unlocked." });
+
     } catch (error) {
-        logger.error("Error cancelling booking by owner", { error: error.message, bookingId });
-        res.status(error.statusCode || 500).json({ success: false, message: error.message });
+        logger.error("Error expiring booking", { error: error.message, bookingId });
+        if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
+        next(error);
     } finally {
         dbSession.endSession();
+    }
+};
+
+export const completeBooking = async (req, res, next) => {
+    const { bookingId } = req.params;
+    const restaurantId = req.restaurant._id;
+
+    try {
+        const booking = await Booking.findOne({ _id: bookingId, restaurantId });
+
+        if (!booking) return res.status(404).json({ success: false, message: "Booking not found." });
+        
+        if (booking.status !== 'confirmed') {
+            return res.status(400).json({ success: false, message: "Only confirmed bookings can be marked as completed." });
+        }
+
+        const bookingDate = new Date(booking.bookingDate);
+        const lastSlot = booking.bookedSlots[booking.bookedSlots.length - 1];
+        const [h, m] = lastSlot.split(':').map(Number);
+        
+        bookingDate.setUTCHours(h + 1, m, 0, 0); 
+        
+        if (new Date() < bookingDate) {
+             return res.status(400).json({ success: false, message: "Cannot mark as completed before the booking time is over." });
+        }
+
+        booking.status = 'completed';
+        await booking.save();
+
+        return res.status(200).json({ success: true, message: "Booking marked as completed.", data: booking });
+
+    } catch (error) {
+        logger.error("Error completing booking", { error: error.message, bookingId });
+        next(error);
     }
 };
