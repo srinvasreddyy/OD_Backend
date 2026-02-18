@@ -1,4 +1,3 @@
-//
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -15,13 +14,15 @@ const cartItemSchema = new mongoose.Schema({
         groupId: String,
         addonId: String
     }],
-    instructions: { type: String, default: "" }, // Ensure instructions are stored
+    instructions: { type: String, default: "" }, 
     cartItemKey: { type: String, required: true }
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({
     fullName: { type: String, required: true, trim: true },
     email: { type: String, required: false, unique: true, trim: true, lowercase: true },
+    // ADDED: username field (sparse allows it to be null for customers)
+    username: { type: String, unique: true, sparse: true, trim: true }, 
     password: { type: String, select: false }, 
     phoneNumber: { type: String, trim: true },
     userType: { 
@@ -68,10 +69,10 @@ const userSchema = new mongoose.Schema({
         isAvailable: { type: Boolean, default: false },
         currentLocation: {
             type: { type: String, default: 'Point' },
-            // FIX: Added default [0,0] to prevents "Point must be an array" error
             coordinates: { type: [Number], default: [0, 0] } 
         },
         vehicleType: String,
+        vehicleNumber: String, // Ensure this exists if you are saving it
         licenseNumber: String,
         rating: { type: Number, default: 0 },
         totalDeliveries: { type: Number, default: 0 }
@@ -91,7 +92,6 @@ userSchema.index({ "deliveryPartnerProfile.currentLocation": "2dsphere" });
 
 // Hash password before saving
 userSchema.pre("save", async function (next) {
-    // Safety check: If for some reason coordinates are empty, force them to [0,0]
     if (this.deliveryPartnerProfile && this.deliveryPartnerProfile.currentLocation) {
         if (!this.deliveryPartnerProfile.currentLocation.coordinates || this.deliveryPartnerProfile.currentLocation.coordinates.length === 0) {
             this.deliveryPartnerProfile.currentLocation.coordinates = [0, 0];

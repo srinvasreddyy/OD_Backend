@@ -154,6 +154,7 @@ export const createDeliveryPartner = async (req, res, next) => {
         
         let newPartner;
         await session.withTransaction(async () => {
+            // Check for existing username
             const existingUser = await User.findOne({ username }).session(session);
             if (existingUser) {
                 const err = new Error("A user with this username already exists.");
@@ -194,7 +195,10 @@ export const createDeliveryPartner = async (req, res, next) => {
         });
 
     } catch (error) {
-        logger.error("Error creating delivery partner", { error: error.message, statusCode: error.statusCode });
+        logger.error("Error creating delivery partner", { error: error.message });
+        if (error.statusCode) {
+             return res.status(error.statusCode).json({ success: false, message: error.message });
+        }
         next(error);
     } finally {
         session.endSession();
@@ -212,7 +216,8 @@ export const getDeliveryPartners = async (req, res, next) => {
         const restaurant = await Restaurant.findById(restaurantId)
             .populate({
                 path: 'deliveryPartners',
-                select: 'fullName username phoneNumber deliveryPartnerProfile isActive'
+                select: 'fullName username phoneNumber deliveryPartnerProfile isActive' 
+                // Note: We cannot select '+password' here to show it, as it is hashed.
             })
             .lean();
 
@@ -277,7 +282,6 @@ export const deleteDeliveryPartner = async (req, res, next) => {
     }
 };
 
-
 /**
  * @description Updates an existing delivery partner's details.
  * @route PUT /api/owner/delivery-partners/:partnerId
@@ -286,40 +290,59 @@ export const deleteDeliveryPartner = async (req, res, next) => {
 export const updateDeliveryPartner = async (req, res, next) => {
     const restaurantId = req.restaurant._id;
     const { partnerId } = req.params;
-    const { fullName, phoneNumber, deliveryPartnerProfile } = req.body;
+    const { fullName, phoneNumber, deliveryPartnerProfile, username, password } = req.body;
 
     try {
         if (!mongoose.Types.ObjectId.isValid(partnerId)) {
             return res.status(400).json({ success: false, message: "Invalid partner ID format." });
         }
 
-        const updateData = {};
-        if (fullName) updateData.fullName = fullName;
-        if (phoneNumber) updateData.phoneNumber = phoneNumber;
+        // 1. Find the user first (Use findOne to ensure they belong to this restaurant)
+        const partner = await User.findOne({ _id: partnerId, restaurantId, userType: 'delivery_partner' });
+
+        if (!partner) {
+            return res.status(404).json({ success: false, message: "Delivery partner not found." });
+        }
+
+        // 2. Update fields
+        if (fullName) partner.fullName = fullName;
+        if (phoneNumber) partner.phoneNumber = phoneNumber;
         
+        // Handle Username Update (Ensure uniqueness if changed)
+        if (username && username !== partner.username) {
+            const existing = await User.findOne({ username });
+            if (existing) {
+                return res.status(409).json({ success: false, message: "Username already taken." });
+            }
+            partner.username = username;
+        }
+
+        // Handle Password Update (Only if provided)
+        if (password && password.trim() !== "") {
+            partner.password = password; // The pre-save hook in User model will hash this!
+        }
+        
+        // Handle Profile Update
         if (deliveryPartnerProfile) {
             if (deliveryPartnerProfile.vehicleType) {
-                updateData["deliveryPartnerProfile.vehicleType"] = deliveryPartnerProfile.vehicleType;
+                partner.deliveryPartnerProfile.vehicleType = deliveryPartnerProfile.vehicleType;
             }
             if (deliveryPartnerProfile.vehicleNumber) {
-                updateData["deliveryPartnerProfile.vehicleNumber"] = deliveryPartnerProfile.vehicleNumber;
+                partner.deliveryPartnerProfile.vehicleNumber = deliveryPartnerProfile.vehicleNumber;
             }
         }
 
-        const updatedPartner = await User.findOneAndUpdate(
-            { _id: partnerId, restaurantId, userType: 'delivery_partner' },
-            { $set: updateData },
-            { new: true, runValidators: true }
-        ).select('-password -currentOTP -otpGeneratedAt');
+        // 3. Save (Triggers middleware validation and hashing)
+        await partner.save();
 
-        if (!updatedPartner) {
-            return res.status(404).json({ success: false, message: "Delivery partner not found or not associated with your restaurant." });
-        }
+        // 4. Return result (excluding password)
+        const partnerObj = partner.toObject();
+        delete partnerObj.password;
 
         return res.status(200).json({
             success: true,
             message: "Delivery partner updated successfully.",
-            data: updatedPartner
+            data: partnerObj
         });
 
     } catch (error) {
