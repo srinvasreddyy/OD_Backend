@@ -55,5 +55,5 @@ const bookingSchema = new mongoose.Schema({
 }, { 
   timestamps: true 
 });
-
+bookingSchema.index({ tableId: 1, bookingDate: 1 }, { unique: false });
 export default mongoose.model("Booking", bookingSchema);
